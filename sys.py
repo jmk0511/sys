@@ -118,6 +118,79 @@ def calculate_scores(row):
         return pd.Series([sentiment, authenticity, relevance])
     except:
         return pd.Series([0.5, 0.5, 0.5])
+    
+    
+# 在已有代码基础上新增以下内容 -------------------------------------------------
+
+# ---------------------- 新增 DeepSeek 分析模块 ----------------------
+def generate_analysis_prompt(product_name, comments, scores):
+    """构建分析提示词模板"""
+    return f"""请根据电商评论数据生成产品分析报告，要求：
+1. 产品名称：{product_name}
+2. 基于以下{len(comments)}条真实评论（评分分布：{scores}）：
+{comments[:5]}...（显示前5条示例）
+3. 输出结构：
+【产品总结】用50字概括整体评价
+【推荐指数】根据评分分布给出1-10分
+【主要优点】列出3-5个核心优势，带具体例子
+【主要缺点】列出3-5个关键不足，带具体例子
+【购买建议】给出是否推荐的结论及原因
+请用markdown格式输出，避免专业术语，保持口语化"""
+
+def call_deepseek_api(prompt):
+    """调用DeepSeek API"""
+    api_key = "sk-efe53c124a9749e99ba1645211040aa4"  # 正式使用请改用 secrets
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 2000
+    }
+    
+    try:
+        response = requests.post("https://api.deepseek.com/v1/chat/completions", 
+                                headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        return f"API错误：{response.text}"
+    except Exception as e:
+        return f"请求失败：{str(e)}"
+
+def analyze_products(df):
+    """执行产品分析主逻辑"""
+    analysis_results = {}
+    
+    with st.status("🔍 深度分析进行中...", expanded=True) as status:
+        # 按产品分组分析
+        for product, group in df.groupby('产品'):
+            status.write(f"正在分析：{product}...")
+            
+            # 准备数据
+            comments = group['评论'].tolist()
+            scores = group['系统推荐指数'].value_counts().to_dict()
+            
+            # 生成提示词
+            prompt = generate_analysis_prompt(
+                product_name=product,
+                comments=comments,
+                scores=scores
+            )
+            
+            # 调用API
+            analysis_result = call_deepseek_api(prompt)
+            analysis_results[product] = analysis_result
+            
+            time.sleep(1)  # 防止速率限制
+            
+        status.update(label="✅ 分析完成！", state="complete")
+    
+    return analysis_results
+
+
 
 # ---------------------- 界面布局 ----------------------
 # 文件上传模块
@@ -233,4 +306,26 @@ if st.session_state.cleaned_df is not None:
                 file_name='predicted_scores.csv',
                 mime='text/csv',
                 key='prediction_download'
+            )
+            
+# ---------------------- 在预测模块后添加分析模块 ----------------------
+if st.session_state.predicted_df is not None:
+    st.divider()
+    st.subheader("深度分析模块")
+    
+    if st.button("📊 生成产品分析报告", type="primary"):
+        # 执行分析
+        analysis_results = analyze_products(st.session_state.predicted_df)
+        
+        # 展示结果
+        for product, report in analysis_results.items():
+            with st.expander(f"**{product}** 完整分析报告", expanded=False):
+                st.markdown(report)
+                
+            # 添加下载按钮
+            st.download_button(
+                label=f"⬇️ 下载 {product} 报告",
+                data=report,
+                file_name=f"{product}_analysis.md",
+                mime="text/markdown"
             )
