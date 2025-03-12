@@ -11,6 +11,25 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import hstack
 import joblib
 import requests
+import os
+
+# ---------------------- 新增文件读取函数 ----------------------
+def load_rebate_keywords():
+    """加载返现关键词文件，带异常处理和默认值"""
+    default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
+    file_path = 'rebate_keywords.txt'
+    
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f if line.strip()]
+                # 过滤有效中文字符
+                valid_keywords = [kw for kw in lines if re.match(r'^[\u4e00-\u9fa5]+$', kw)]
+                return valid_keywords if valid_keywords else default_keywords
+        return default_keywords
+    except Exception as e:
+        st.error(f"⚠️ 关键词文件读取失败，已启用默认规则: {str(e)}")
+        return default_keywords
 
 # 初始化session状态
 if 'raw_df' not in st.session_state:
@@ -51,7 +70,7 @@ def cleaning(df):
         # 新增步骤：删除产品为空的数据
         status.write("2. 删除产品信息缺失的评论...")
         original_count = len(df)
-        df = df.dropna(subset=['产品'])  # 关键修改点[1,5](@ref)
+        df = df.dropna(subset=['产品'])
         removed_count = original_count - len(df)
         status.write(f"已清除{removed_count}条无产品信息的记录")
         progress.progress(32)
@@ -80,28 +99,35 @@ def cleaning(df):
         st.error(f"错误详情：{str(e)}")
         return df
 
-try:
-    with open('sensitive_words.txt', 'r', encoding='utf-8') as file:
-        sensitive_words = [line.strip() for line in file if line.strip()]
-except IOError:
-    print("文件读取失败，请检查文件路径")
-
 def build_rebate_pattern():
-    """构建返现检测正则"""
-    base_keywords = [kw for kw in rebate_keywords if re.match(r'^[\u4e00-\u9fa5]+$', kw)]
+    """构建返现检测正则（增强版）"""
     patterns = []
+    base_keywords = load_rebate_keywords()
+    
+    # 处理每个关键词
     for kw in base_keywords:
+        # 原词匹配（带空格干扰）
+        patterns.append(re.escape(kw))
+        patterns.append(re.sub(r'([\u4e00-\u9fa5])', r'\1\\s*', kw))  # 处理空格干扰
+        
+        # 全拼转换（带数字变形）
         full_pinyin = ''.join(lazy_pinyin(kw, style=Style.NORMAL))
-        patterns.append(re.escape(full_pinyin))
+        patterns.append(re.sub(r'([a-z])\d?', r'\1\\d*', full_pinyin))  # 处理数字变形
+        
+        # 首字母转换（带符号干扰）
         initials = ''.join([p[0] for p in lazy_pinyin(kw, style=Style.INITIALS) if p])
         if initials:
-            patterns.append(re.escape(initials))
-    patterns += [
+            patterns.append(re.sub(r'(.)', r'\1\\W*', initials))  # 处理符号间隔
+
+    # 添加基础通用模式
+    base_patterns = [
         r'返\s*现', r'评.{0,3}返', 
-        r'加\s*微', r'领\s*红\s*包',
-        r'\d+\s*元\s*奖'
+        r'加\s*[微Vv]', r'领\s*红\s*包',
+        r'\d+\s*元\s*奖', r'[Qq扣]\\s*裙'
     ]
-    return re.compile('|'.join(patterns), flags=re.IGNORECASE)
+    
+    final_pattern = '|'.join(patterns + base_patterns)
+    return re.compile(final_pattern, flags=re.IGNORECASE)
 
 def filter_spam_comments(df):
     """水军检测算法"""
