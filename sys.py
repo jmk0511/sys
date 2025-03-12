@@ -216,7 +216,7 @@ def call_deepseek_api(prompt):
         return f"API调用失败：{str(e)}"
 
 # ---------------------- 界面组件 ----------------------
-@st.experimental_fragment
+@st.fragment
 def file_uploader():
     """文件上传组件"""
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
@@ -225,7 +225,7 @@ def file_uploader():
         st.session_state.sys['raw_df'] = pd.read_csv(uploaded_file)
         st.session_state.sys['show_raw'] = True
 
-@st.experimental_fragment
+@st.fragment
 def raw_data_viewer():
     """原始数据查看器"""
     if st.session_state.sys['show_raw'] and st.session_state.sys['raw_df'] is not None:
@@ -239,7 +239,7 @@ def raw_data_viewer():
             if st.button("❌ 关闭原始数据", key="close_raw"):
                 st.session_state.sys['show_raw'] = False
 
-@st.experimental_fragment
+@st.fragment
 def cleaning_controller():
     """数据清洗控制器"""
     if st.session_state.sys['raw_df'] is not None:
@@ -271,7 +271,7 @@ def cleaning_controller():
                     if st.button("❌ 关闭清洗结果", key="close_clean"):
                         st.session_state.sys['show_cleaned'] = False
 
-@st.experimental_fragment
+@st.fragment
 def prediction_viewer():
     """预测结果查看器"""
     if st.session_state.sys['cleaned_df'] is not None:
@@ -302,7 +302,7 @@ def prediction_viewer():
             if st.button("❌ 关闭预测结果", key="close_pred"):
                 st.session_state.sys['show_predicted'] = False
 
-@st.experimental_fragment
+@st.fragment
 def analysis_reporter():
     """分析报告生成器"""
     if st.session_state.sys['predicted_df'] is not None:
