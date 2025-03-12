@@ -120,10 +120,8 @@ def calculate_scores(row):
     except:
         return pd.Series([0.5, 0.5, 0.5])
     
-    
-# 在已有代码基础上新增以下内容 -------------------------------------------------
 
-# ---------------------- 新增 DeepSeek 分析模块 ----------------------
+# ----------------------  DeepSeek 分析模块 ----------------------
 def generate_analysis_prompt(product_name, comments, scores):
     """构建分析提示词模板"""
     return f"""请根据电商评论数据生成产品分析报告，要求：
@@ -164,6 +162,7 @@ def call_deepseek_api(prompt):
 def analyze_products(df):
     """执行产品分析主逻辑"""
     analysis_results = {}
+    start_time = time.time()  # 记录开始时间
     
     with st.status("🔍 深度分析进行中...", expanded=True) as status:
         # 按产品分组分析
@@ -185,9 +184,10 @@ def analyze_products(df):
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
             
-            time.sleep(0.08)  # 防止速率限制
+            time.sleep(0.08)
             
-        status.update(label="✅ 分析完成！", state="complete")
+        duration = time.time() - start_time  # 计算耗时
+        status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")  # 显示耗时
     
     return analysis_results
 
@@ -205,7 +205,11 @@ if uploaded_file and st.session_state.raw_df is None:
 if st.session_state.raw_df is not None:
     with st.expander("📂 永久查看原始数据", expanded=True):
         st.write(f"原始记录数：{len(st.session_state.raw_df)}")
-        st.dataframe(st.session_state.raw_df.head(3), use_container_width=True)
+        st.dataframe(
+            st.session_state.raw_df,
+            use_container_width=True,
+            height=500  # 设置固定高度启用滚动条
+        )
         
 # 数据清洗模块
 if st.session_state.raw_df is not None:
@@ -224,17 +228,11 @@ if st.session_state.raw_df is not None:
         with col2:
             if st.button("🔍 查看清洗结果", help="独立查看清洗数据", use_container_width=True):
                 with st.expander("✨ 清洗后数据详情", expanded=True):
+                    st.write(f"清洗后记录数：{len(st.session_state.cleaned_df)}")  # 新增数量显示
                     st.dataframe(
                         st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
                         use_container_width=True,
-                        height=400
-                    )
-                    csv = st.session_state.cleaned_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ 下载清洗数据",
-                        data=csv,
-                        file_name='cleaned_data.csv',
-                        mime='text/csv'
+                        height=500  # 设置滚动条
                     )
 
 # 预测模块
