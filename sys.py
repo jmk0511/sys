@@ -156,15 +156,15 @@ def predict_recommend(df):
             # 3. 处理分类特征编码（创建新列）
             st.write("3. 编码分类特征...")
             # 使用训练时的category映射（关键修改点）
-            df['地区_编码'] = df['地区'].astype(
-                'category', 
+            df['地区_编码'] = pd.Categorical(
+                df['地区'], 
                 categories=st.session_state.region_mapping
-            ).cat.codes.replace(-1, 0)  # 处理未知类别
+            ).codes.replace(-1, 0)  # 处理未知类别
             
-            df['产品_编码'] = df['产品'].astype(
-                'category',
+            df['产品_编码'] = pd.Categorical(
+                df['产品'], 
                 categories=st.session_state.product_mapping
-            ).cat.codes.replace(-1, 0)
+            ).codes.replace(-1, 0)
 
             # 4. 生成TF-IDF特征（使用训练时的vectorizer）
             st.write("4. 生成文本特征...")
