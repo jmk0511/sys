@@ -155,7 +155,6 @@ def predict_recommend(df):
 
             # 3. 处理分类特征编码（创建新列）
             st.write("3. 编码分类特征...")
-            # 使用训练时的category映射（关键修改点）
             df['地区_编码'] = pd.Categorical(
                 df['地区'], 
                 categories=st.session_state.region_mapping
