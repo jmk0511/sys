@@ -5,7 +5,7 @@ import re
 from pypinyin import lazy_pinyin, Style
 from datetime import datetime
 import jieba
-
+from snownlp import SnowNLP
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import hstack
 import joblib
@@ -119,83 +119,49 @@ def filter_spam_comments(df):
     except KeyError:
         return df
 
+# 新增预测函数（参考model.ipynb的特征工程）
+def predict_recommendation(df):
+    """执行完整预测流程"""
+    progress = st.progress(0)
+    status = st.status("🔮 正在生成预测...")
+    
+    try:
+        # 特征工程
+        status.write("1. 提取关键词...")
+        df['关键词'] = df['评论'].apply(lambda x: ' '.join([word for word in jieba.cut(str(x)) if len(word) > 1][:5]))
+        progress.progress(30)
 
-def predict_recommend(df):
-    """执行推荐指数预测（集成完整特征工程）"""
-    if 'model' not in st.session_state:
-        st.error("模型未加载")
+        # 情感计算（参考model.ipynb的评分逻辑）
+        status.write("2. 计算情感指标...")
+        df[['情感度', '真实性', '参考度']] = df.apply(lambda row: pd.Series([
+            SnowNLP(str(row['评论'])).sentiments,
+            min(len(str(row['评论']))/100, 1),
+            len(row['关键词'].split())/10
+        ]), axis=1)
+        progress.progress(60)
+
+        # 特征矩阵构建（复用训练时的TF-IDF）
+        status.write("3. 构建特征矩阵...")
+        keywords_tfidf = st.session_state.tfidf.transform(df['关键词'])
+        num_features = df[['情感度', '真实性', '参考度']].values
+        categorical_features = df[['地区', '产品']].apply(lambda col: col.map(
+            st.session_state.region_mapping if col.name == '地区' 
+            else st.session_state.product_mapping
+        )).values
+        final_features = hstack([keywords_tfidf, num_features, categorical_features])
+        progress.progress(80)
+
+        # 执行预测
+        status.write("4. 生成推荐指数...")
+        df['推荐指数'] = st.session_state.model.predict(final_features).round().clip(1, 10).astype(int)
+        progress.progress(100)
+        status.update(label="✅ 预测完成！", state="complete")
+        return df
+    except Exception as e:
+        status.update(label="❌ 预测失败", state="error")
+        st.error(f"预测错误：{str(e)}")
         return df
 
-    with st.status("🔮 正在生成预测..."):
-        try:
-            # 复制数据避免污染原数据
-            df = df.copy()
-            
-            # 0. 备份原始产品名称（关键步骤）
-            original_product = df['产品'].copy()
-            
-            # 1. 提取关键词（与训练时完全一致）
-            st.write("1. 提取关键词...")
-            def extract_keywords(text):
-                words = [word for word in jieba.cut(str(text)) if len(word) > 1]
-                return ' '.join(words[:5])  # 保持训练时的n=5
-            df['关键词'] = df['评论'].apply(extract_keywords)
-
-            # 2. 计算数值特征（完全复制训练逻辑）
-            st.write("2. 计算情感特征...")
-            def calculate_features(row):
-                try:
-                    sentiment = SnowNLP(row['评论']).sentiments
-                    authenticity = min(len(str(row['评论']))/100, 1)
-                    relevance = len(row['关键词'].split())/10
-                    return pd.Series([sentiment, authenticity, relevance])
-                except:
-                    return pd.Series([0.5, 0.5, 0.5])  # 异常处理保持一致
-            df[['情感度', '真实性', '参考度']] = df.apply(calculate_features, axis=1)
-
-            # 3. 处理分类特征编码（创建新列）
-            st.write("3. 编码分类特征...")
-            df['地区_编码'] = pd.Categorical(
-                df['地区'], 
-                categories=st.session_state.region_mapping
-            ).codes.replace(-1, 0)  # 处理未知类别
-            
-            df['产品_编码'] = pd.Categorical(
-                df['产品'], 
-                categories=st.session_state.product_mapping
-            ).codes.replace(-1, 0)
-
-            # 4. 生成TF-IDF特征（使用训练时的vectorizer）
-            st.write("4. 生成文本特征...")
-            tfidf_features = st.session_state.tfidf.transform(df['关键词'])
-
-            # 5. 构建特征矩阵（保持训练时结构）
-            st.write("5. 组合特征...")
-            num_features = ['情感度', '真实性', '参考度']
-            categorical_features = ['地区_编码', '产品_编码']
-            
-            # 完全复制训练时的hstack结构
-            features = hstack([
-                tfidf_features,
-                df[num_features].values.astype(float),
-                df[categorical_features].values.astype(int)
-            ])
-
-            # 6. 执行预测（保持训练时后处理）
-            st.write("6. 进行预测...")
-            predictions = st.session_state.model.predict(features)
-            df['推荐指数'] = predictions.round().clip(1, 10).astype(int)
-            
-            # 7. 恢复原始产品名称（关键步骤）
-            df['产品'] = original_product
-            
-            return df[['产品', '评论', '推荐指数']]  # 确保输出原始名称
-
-        except Exception as e:
-            st.error(f"预测失败: {str(e)}")
-            import traceback
-            st.error(traceback.format_exc())
-            return df
 
 # 文件上传模块（始终显示）
 uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
@@ -246,57 +212,48 @@ if st.session_state.raw_df is not None:
                         mime='text/csv'
                     )
                     
-                    
-# 预测模块（独立功能）
+# 在现有清洗模块后添加
 if st.session_state.cleaned_df is not None:
     st.divider()
-    st.subheader("推荐指数预测模块")
+    st.subheader("智能预测模块")
     
-    col_pred1, col_pred2 = st.columns([1,3])
-    with col_pred1:
-        # 触发预测
-        if st.button("✨ 生成推荐指数", type="primary", 
-                   help="基于清洗数据独立预测", use_container_width=True):
-            with st.spinner('预测进行中...'):
-                start_pred = time.time()
-                try:
-                    # 执行预测并保留原始列
-                    predicted_df = predict_recommend(st.session_state.cleaned_df.copy())
-                    # 精确筛选目标字段（确保列存在性验证）
-                    required_columns = ['产品', '评论', '推荐指数']
-                    if all(col in predicted_df.columns for col in required_columns):
-                        st.session_state.predicted_df = predicted_df[required_columns]
-                        st.session_state.pred_time = time.time() - start_pred
-                        st.toast(f"预测完成！耗时{st.session_state.pred_time:.2f}秒", icon="✅")
-                    else:
-                        st.error("预测结果缺少必要字段")
-                except Exception as e:
-                    st.error(f"预测异常: {str(e)}")
-
-    # 显示预测结果            
+    # 双栏布局
+    col_pred, col_display = st.columns([1,3])
+    
+    with col_pred:
+        if st.button("✨ 执行预测", help="基于清洗后的数据生成推荐指数", 
+                    use_container_width=True):
+            with st.spinner('预测中...'):
+                st.session_state.predicted_df = predict_recommendation(
+                    st.session_state.cleaned_df.copy()
+                )
+                
     if st.session_state.predicted_df is not None:
-        with col_pred2:
-            if st.button("🔍 查看预测结果", type="primary", 
-                    help="独立查看预测数据", use_container_width=True):
-                with st.expander("📈 预测结果详情", expanded=True):
-                    # 直接显示原始数值（移除格式转换）
-                    display_df = st.session_state.predicted_df.copy()
+        with col_display:
+            with st.expander("📊 预测结果分析", expanded=True):
+                # 结果可视化
+                st.write("推荐指数分布:")
+                hist_data = pd.cut(st.session_state.predicted_df['推荐指数'], 
+                                 bins=[0,5,8,10], 
+                                 labels=['差评', '中评', '好评'])
+                st.bar_chart(hist_data.value_counts())
                 
-                    # 使用原生dataframe显示
-                    st.dataframe(
-                        display_df,
-                        use_container_width=True,
-                        height=400
-                    )
+                # 抽样展示
+                st.write("抽样结果（含预测值）:")
+                sample_data = st.session_state.predicted_df.sample(3)[[
+                    '产品', '评论', '推荐指数'
+                ]]
+                st.dataframe(sample_data.style.applymap(
+                    lambda x: "background-color: #e6ffe6" if x>=8 else 
+                    ("#fff3e6" if x>=5 else "#ffe6e6"), 
+                    subset=['推荐指数']
+                ))
                 
-                    # 下载功能保持不变
-                    csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ 下载预测数据",
-                        data=csv,
-                        file_name='predicted_data.csv',
-                        mime='text/csv',
-                        help="下载包含1-10分原始评分的数据文件"
-                    )    
-        
-
+                # 下载功能
+                csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ 下载完整预测数据",
+                    data=csv,
+                    file_name='predicted_data.csv',
+                    mime='text/csv'
+                )                    
