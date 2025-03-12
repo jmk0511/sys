@@ -294,10 +294,18 @@ if st.session_state.cleaned_df is not None:
 
         # 显示预测结果
         if st.session_state.predicted_df is not None:
-            st.success("预测结果预览：")
-            st.dataframe(st.session_state.predicted_df.head(10), use_container_width=True)
-            
-            # 下载预测结果
+            st.success("预测结果：")
+            st.dataframe(
+                st.session_state.predicted_df,
+                use_container_width=True,
+                height=600,  # 设置固定高度启用滚动条
+                hide_index=True  # 可选：隐藏默认索引
+            )
+    
+            # 添加数据统计信息
+            st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
+    
+            # 下载预测结果（保持原代码不变）
             csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="⬇️ 下载预测结果",
