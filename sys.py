@@ -11,11 +11,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import hstack
 import joblib
 import requests
-import os
 
-# ---------------------- 新增文件读取函数 ----------------------
 def load_rebate_keywords():
-    """加载返现关键词文件，带异常处理和默认值"""
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
     file_path = 'rebate_keywords.txt'
     
@@ -23,7 +20,6 @@ def load_rebate_keywords():
         if os.path.exists(file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
                 lines = [line.strip() for line in f if line.strip()]
-                # 过滤有效中文字符
                 valid_keywords = [kw for kw in lines if re.match(r'^[\u4e00-\u9fa5]+$', kw)]
                 return valid_keywords if valid_keywords else default_keywords
         return default_keywords
@@ -50,13 +46,11 @@ if 'model' not in st.session_state:
     except Exception as e:
         st.error(f"初始化失败: {str(e)}")
 
-# 页面配置
 st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
 st.title("自动化数据清洗与推荐预测系统")
 
-# ---------------------- 数据清洗函数 ----------------------
+# ---------------------- 数据清洗函数（已集成产品名称标准化）----------------------
 def cleaning(df):
-    """核心清洗逻辑"""
     progress = st.progress(0)
     status = st.status("🚀 正在处理数据...")
     
@@ -67,7 +61,7 @@ def cleaning(df):
         df = df[df['汉字数'] > 5].drop(columns=['汉字数'])
         progress.progress(16)
 
-        # 新增步骤：删除产品为空的数据
+        # 步骤2：删除产品为空的数据
         status.write("2. 删除产品信息缺失的评论...")
         original_count = len(df)
         df = df.dropna(subset=['产品'])
@@ -75,16 +69,24 @@ def cleaning(df):
         status.write(f"已清除{removed_count}条无产品信息的记录")
         progress.progress(32)
 
-        # 原步骤调整为后续步骤
+        # 步骤2.5：标准化产品名称（新增功能）
+        status.write("2.5 标准化产品名称格式...")
+        df['产品'] = df['产品'].str.replace(r'[^\w\s\u4e00-\u9fa5]', '', regex=True)  # 移除非文字符号
+        df['产品'] = df['产品'].str.strip().str.upper()  # 去除空格并统一大写
+        progress.progress(40)
+
+        # 步骤3：检测重复评论
         status.write("3. 检测重复评论...")
         df = df[~df.duplicated(subset=['评论'], keep='first')]
         progress.progress(48)
 
+        # 步骤4：检测好评返现
         status.write("4. 检测好评返现...")
         rebate_pattern = build_rebate_pattern()
         df = df[~df['评论'].str.contains(rebate_pattern, na=False)]
         progress.progress(64)
 
+        # 步骤5：检测可疑水军
         status.write("5. 检测可疑水军...")
         df = filter_spam_comments(df)
         progress.progress(80)
@@ -100,26 +102,18 @@ def cleaning(df):
         return df
 
 def build_rebate_pattern():
-    """构建返现检测正则（增强版）"""
     patterns = []
     base_keywords = load_rebate_keywords()
     
-    # 处理每个关键词
     for kw in base_keywords:
-        # 原词匹配（带空格干扰）
         patterns.append(re.escape(kw))
-        patterns.append(re.sub(r'([\u4e00-\u9fa5])', r'\1\\s*', kw))  # 处理空格干扰
-        
-        # 全拼转换（带数字变形）
+        patterns.append(re.sub(r'([\u4e00-\u9fa5])', r'\1\\s*', kw))
         full_pinyin = ''.join(lazy_pinyin(kw, style=Style.NORMAL))
-        patterns.append(re.sub(r'([a-z])\d?', r'\1\\d*', full_pinyin))  # 处理数字变形
-        
-        # 首字母转换（带符号干扰）
+        patterns.append(re.sub(r'([a-z])\d?', r'\1\\d*', full_pinyin))
         initials = ''.join([p[0] for p in lazy_pinyin(kw, style=Style.INITIALS) if p])
         if initials:
-            patterns.append(re.sub(r'(.)', r'\1\\W*', initials))  # 处理符号间隔
+            patterns.append(re.sub(r'(.)', r'\1\\W*', initials))
 
-    # 添加基础通用模式
     base_patterns = [
         r'返\s*现', r'评.{0,3}返', 
         r'加\s*[微Vv]', r'领\s*红\s*包',
@@ -130,7 +124,6 @@ def build_rebate_pattern():
     return re.compile(final_pattern, flags=re.IGNORECASE)
 
 def filter_spam_comments(df):
-    """水军检测算法"""
     try:
         df['日期'] = pd.to_datetime(df['日期'])
         df_sorted = df.sort_values(['昵称', '地区', '日期'])
@@ -143,12 +136,10 @@ def filter_spam_comments(df):
 
 # ---------------------- 预测相关函数 ----------------------
 def extract_keywords(text, n=5):
-    """提取关键词"""
     words = [word for word in jieba.cut(str(text)) if len(word) > 1]
     return ' '.join(words[:n])
 
 def calculate_scores(row):
-    """计算特征分数"""
     try:
         text = str(row['评论'])
         sentiment = SnowNLP(text).sentiments
@@ -233,23 +224,16 @@ def analyze_products(df):
 
 
 # ---------------------- 界面布局 ----------------------
-# 文件上传模块
-uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
-                               help="支持UTF-8编码文件，最大100MB")
+uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], help="支持UTF-8编码文件，最大100MB")
 
 if uploaded_file and st.session_state.raw_df is None:
     st.session_state.raw_df = pd.read_csv(uploaded_file)
 
-# 显示原始数据
 if st.session_state.raw_df is not None:
     with st.expander("📂 永久查看原始数据", expanded=True):
         st.write(f"原始记录数：{len(st.session_state.raw_df)}")
-        st.dataframe(
-            st.session_state.raw_df,
-            use_container_width=True,
-            height=500  # 设置固定高度启用滚动条
-        )
-        
+        st.dataframe(st.session_state.raw_df, use_container_width=True, height=500)
+
 # 数据清洗模块
 if st.session_state.raw_df is not None:
     st.divider()
@@ -267,11 +251,11 @@ if st.session_state.raw_df is not None:
         with col2:
             if st.button("🔍 查看清洗结果", help="独立查看清洗数据", use_container_width=True):
                 with st.expander("✨ 清洗后数据详情", expanded=True):
-                    st.write(f"清洗后记录数：{len(st.session_state.cleaned_df)}")  # 新增数量显示
+                    st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
                     st.dataframe(
                         st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
                         use_container_width=True,
-                        height=500  # 设置滚动条
+                        height=500
                     )
 
 # 预测模块
@@ -288,7 +272,7 @@ if st.session_state.cleaned_df is not None:
         
         with st.status("🧠 正在生成预测...", expanded=True) as status:
             try:
-                # 特征工程
+                # 特征工程（保持不变）
                 status.write("1. 提取关键词...")
                 cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
                 
@@ -331,15 +315,9 @@ if st.session_state.cleaned_df is not None:
                 st.error(f"错误详情：{str(e)}")
                 st.stop()
 
-        # 显示预测结果
         if st.session_state.predicted_df is not None:
             st.success("预测结果：")
-            st.dataframe(
-                st.session_state.predicted_df,
-                use_container_width=True,
-                height=600,  # 设置固定高度启用滚动条
-                hide_index=True  # 可选：隐藏默认索引
-            )
+            st.dataframe(st.session_state.predicted_df, use_container_width=True, height=600, hide_index=True)
     
             # 添加数据统计信息
             st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
