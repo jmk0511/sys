@@ -10,6 +10,7 @@ from snownlp import SnowNLP
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import hstack
 import joblib
+import requests
 
 # 初始化session状态
 if 'raw_df' not in st.session_state:
