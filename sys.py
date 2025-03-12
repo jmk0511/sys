@@ -249,21 +249,3 @@ if st.session_state.cleaned_df is not None:
                         st.bar_chart(hist_data.value_counts())
                     except KeyError:
                         st.error("无法访问推荐指数列，请检查特征工程步骤")
-                
-                # 抽样展示（添加列名验证）
-                    st.write("抽样结果（含预测值）:")
-                    sample_columns = ['产品', '评论', '推荐指数']
-                    available_cols = [col for col in sample_columns 
-                                    if col in st.session_state.predicted_df.columns]
-                
-                    if len(available_cols) == 3:
-                        sample_data = st.session_state.predicted_df.sample(3)[available_cols]
-                        st.dataframe(
-                            sample_data.style.applymap(
-                                lambda x: "background-color: #e6ffe6" if x>=8 else 
-                                ("#fff3e6" if x>=5 else "#ffe6e6"), 
-                                subset=['推荐指数']
-                            )
-                        )
-                    else:
-                        st.error("数据列缺失，现有列：" + ", ".join(st.session_state.predicted_df.columns))               
