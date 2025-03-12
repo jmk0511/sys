@@ -260,33 +260,44 @@ if st.session_state.cleaned_df is not None:
                    help="基于清洗数据独立预测", use_container_width=True):
             with st.spinner('预测进行中...'):
                 start_pred = time.time()
-                st.session_state.predicted_df = predict_recommend(
-                    st.session_state.cleaned_df.copy()
-                ).filter(['产品','评论','推荐指数']) # 过滤指定字段
-                st.session_state.pred_time = time.time() - start_pred
+                try:
+                    # 执行预测并保留原始列
+                    predicted_df = predict_recommend(st.session_state.cleaned_df.copy())
+                    # 精确筛选目标字段（确保列存在性验证）
+                    required_columns = ['产品', '评论', '推荐指数']
+                    if all(col in predicted_df.columns for col in required_columns):
+                        st.session_state.predicted_df = predicted_df[required_columns]
+                        st.session_state.pred_time = time.time() - start_pred
+                        st.toast(f"预测完成！耗时{st.session_state.pred_time:.2f}秒", icon="✅")
+                    else:
+                        st.error("预测结果缺少必要字段")
+                except Exception as e:
+                    st.error(f"预测异常: {str(e)}")
 
     # 显示预测结果            
     if st.session_state.predicted_df is not None:
         with col_pred2:
             if st.button("🔍 查看预测结果", type="primary", 
-                       help="独立查看预测数据", use_container_width=True):
+                    help="独立查看预测数据", use_container_width=True):
                 with st.expander("📈 预测结果详情", expanded=True):
-                    # 星级显示增强
+                    # 直接显示原始数值（移除格式转换）
                     display_df = st.session_state.predicted_df.copy()
-                    display_df['推荐指数'] = display_df['推荐指数'].astype(str) + ' ★'
-                    
+                
+                    # 使用原生dataframe显示
                     st.dataframe(
                         display_df,
                         use_container_width=True,
                         height=400
                     )
-                    # 下载预测结果
+                
+                    # 下载功能保持不变
                     csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="⬇️ 下载预测数据",
                         data=csv,
                         file_name='predicted_data.csv',
-                        mime='text/csv'
-                    )     
+                        mime='text/csv',
+                        help="下载包含1-10分原始评分的数据文件"
+                    )    
         
 
