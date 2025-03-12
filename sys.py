@@ -12,31 +12,36 @@ from scipy.sparse import hstack
 import joblib
 import requests
 
-# ---------------------- 初始化全局状态 ----------------------
-if 'sys' not in st.session_state:
-    st.session_state.sys = {
-        # 数据存储
+# 初始化session状态
+if 'sys_state' not in st.session_state:
+    st.session_state.sys_state = {
         'raw_df': None,
         'cleaned_df': None,
         'predicted_df': None,
-        'analysis': {},
-        
-        # 界面状态
         'show_raw': True,
         'show_cleaned': False,
         'show_predicted': False,
-        'show_analysis': {},
-        
-        # 模型相关
-        'model': None,
-        'tfidf': None,
-        'region_map': None,
-        'product_map': None
+        'analysis_reports': {}
     }
 
-# ---------------------- 核心功能函数 ----------------------
+# 加载模型和预处理对象
+if 'model' not in st.session_state:
+    try:
+        st.session_state.model = joblib.load('model.joblib')
+        st.session_state.tfidf = joblib.load('tfidf_vectorizer.joblib')
+        category_mappings = joblib.load('category_mappings.joblib')
+        st.session_state.region_mapping = category_mappings['region']
+        st.session_state.product_mapping = category_mappings['product']
+    except Exception as e:
+        st.error(f"初始化失败: {str(e)}")
+
+# 页面配置
+st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
+st.title("自动化数据清洗与推荐预测系统")
+
+# ---------------------- 数据清洗函数 ----------------------
 def cleaning(df):
-    """数据清洗核心逻辑"""
+    """核心清洗逻辑"""
     progress = st.progress(0)
     status = st.status("🚀 正在处理数据...")
     
@@ -47,26 +52,24 @@ def cleaning(df):
         df = df[df['汉字数'] > 5].drop(columns=['汉字数'])
         progress.progress(16)
 
-        # 步骤2：删除产品为空数据
+        # 新增步骤：删除产品为空的数据
         status.write("2. 删除产品信息缺失的评论...")
         original_count = len(df)
-        df = df.dropna(subset=['产品'])
+        df = df.dropna(subset=['产品'])  # 关键修改点[1,5](@ref)
         removed_count = original_count - len(df)
         status.write(f"已清除{removed_count}条无产品信息的记录")
         progress.progress(32)
 
-        # 步骤3：重复评论过滤
+        # 原步骤调整为后续步骤
         status.write("3. 检测重复评论...")
         df = df[~df.duplicated(subset=['评论'], keep='first')]
         progress.progress(48)
 
-        # 步骤4：返现检测
         status.write("4. 检测好评返现...")
         rebate_pattern = build_rebate_pattern()
         df = df[~df['评论'].str.contains(rebate_pattern, na=False)]
         progress.progress(64)
 
-        # 步骤5：水军检测
         status.write("5. 检测可疑水军...")
         df = filter_spam_comments(df)
         progress.progress(80)
@@ -76,14 +79,13 @@ def cleaning(df):
         progress.progress(100)
         status.update(label="✅ 清洗完成！", state="complete")
         return df
-        
     except Exception as e:
         status.update(label="❌ 处理出错！", state="error")
         st.error(f"错误详情：{str(e)}")
         return df
 
 def build_rebate_pattern():
-    """构建返现正则表达式"""
+    """构建返现检测正则"""
     base_keywords = ['好评返现', '晒图奖励', '评价有礼']
     patterns = []
     for kw in base_keywords:
@@ -111,252 +113,236 @@ def filter_spam_comments(df):
     except KeyError:
         return df
 
-def predict_recommendation():
-    """执行预测流程"""
-    with st.status("🧠 正在生成预测...", expanded=True) as status:
-        try:
-            cleaned_df = st.session_state.sys['cleaned_df'].copy()
-            
-            # 特征工程
-            status.write("1. 提取关键词...")
-            cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
-            
-            status.write("2. 计算情感特征...")
-            scores = cleaned_df.apply(calculate_scores, axis=1)
-            cleaned_df[['情感度', '真实性', '参考度']] = scores
-            
-            # TF-IDF转换
-            status.write("3. 文本特征转换...")
-            keywords_tfidf = st.session_state.sys['tfidf'].transform(cleaned_df['关键词'])
-            
-            # 构建特征矩阵
-            status.write("4. 合并特征...")
-            numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
-            features = hstack([keywords_tfidf, numeric_features])
-            
-            # 分类编码
-            status.write("5. 处理分类特征...")
-            cleaned_df['地区_编码'] = pd.Categorical(
-                cleaned_df['地区'], 
-                categories=st.session_state.sys['region_map']
-            ).codes
-            cleaned_df['产品_编码'] = pd.Categorical(
-                cleaned_df['产品'],
-                categories=st.session_state.sys['product_map']
-            ).codes
-            final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
-            
-            # 预测
-            status.write("6. 进行模型预测...")
-            predicted_scores = st.session_state.sys['model'].predict(final_features)
-            cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
-            
-            # 保存结果
-            st.session_state.sys['predicted_df'] = cleaned_df[['产品', '评论', '系统推荐指数']]
-            status.update(label="✅ 预测完成！", state="complete")
-            st.session_state.sys['show_predicted'] = True
-            
-        except Exception as e:
-            status.update(label="❌ 预测出错！", state="error")
-            st.error(f"错误详情：{str(e)}")
-            st.stop()
+# ---------------------- 预测相关函数 ----------------------
+def extract_keywords(text, n=5):
+    """提取关键词"""
+    words = [word for word in jieba.cut(str(text)) if len(word) > 1]
+    return ' '.join(words[:n])
 
-def analyze_products():
-    """执行深度分析"""
-    analysis_results = {}
-    start_time = time.time()
+def calculate_scores(row):
+    """计算特征分数"""
+    try:
+        text = str(row['评论'])
+        sentiment = SnowNLP(text).sentiments
+        authenticity = min(len(text)/100, 1)
+        relevance = len(str(row.get('关键词', '')).split())/10
+        return pd.Series([sentiment, authenticity, relevance])
+    except:
+        return pd.Series([0.5, 0.5, 0.5])
     
-    with st.status("🔍 深度分析进行中...", expanded=True) as status:
-        df = st.session_state.sys['predicted_df']
-        for product, group in df.groupby('产品'):
-            status.write(f"正在分析：{product}...")
-            
-            comments = group['评论'].tolist()
-            scores = group['系统推荐指数'].value_counts().to_dict()
-            
-            prompt = f"""请根据电商评论数据生成分析报告，要求：
-1. 产品名称：{product}
-2. 基于{len(comments)}条评论（评分分布：{scores}）
+
+# ----------------------  DeepSeek 分析模块 ----------------------
+def generate_analysis_prompt(product_name, comments, scores):
+    """构建分析提示词模板"""
+    return f"""请根据电商评论数据生成产品分析报告，要求：
+1. 产品名称：{product_name}
+2. 基于以下{len(comments)}条真实评论（评分分布：{scores}）：
+{comments[:5]}...（显示前5条示例）
 3. 输出结构：
-【总结】50字概括
-【推荐指数】1-10分
-【优点】3-5个带例子
-【缺点】3-5个带例子
-【建议】是否推荐及原因
-用markdown格式，口语化"""
-            
-            result = call_deepseek_api(prompt)
-            analysis_results[product] = result
-            time.sleep(0.1)
-            
-        duration = time.time() - start_time
-        status.update(label=f"✅ 分析完成！耗时 {duration:.1f}秒", state="complete")
-    
-    st.session_state.sys['analysis'] = analysis_results
-    for product in analysis_results:
-        st.session_state.sys['show_analysis'][product] = True
+【产品总结】用50字概括整体评价
+【推荐指数】根据评分分布给出1-10分
+【主要优点】列出3-5个核心优势，带具体例子
+【主要缺点】列出3-5个关键不足，带具体例子
+【购买建议】给出是否推荐的结论及原因
+请用markdown格式输出，避免专业术语，保持口语化"""
 
 def call_deepseek_api(prompt):
     """调用DeepSeek API"""
+    api_key = st.secrets["DEEPSEEK_API_KEY"]  # 正式使用请改用 secrets
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 2000
+    }
+    
     try:
-        headers = {
-            "Authorization": f"Bearer {st.secrets['DEEPSEEK_API_KEY']}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": 2000
-        }
         response = requests.post("https://api.deepseek.com/v1/chat/completions", 
-                               headers=headers, json=data, timeout=30)
-        return response.json()['choices'][0]['message']['content']
+                                headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        return f"API错误：{response.text}"
     except Exception as e:
-        return f"API调用失败：{str(e)}"
+        return f"请求失败：{str(e)}"
 
-# ---------------------- 界面组件 ----------------------
-@st.experimental_fragment
-def file_uploader():
-    """文件上传组件"""
-    uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
-                                   help="支持UTF-8编码，最大100MB")
-    if uploaded_file and not st.session_state.sys['raw_df']:
-        st.session_state.sys['raw_df'] = pd.read_csv(uploaded_file)
-        st.session_state.sys['show_raw'] = True
-
-@st.experimental_fragment
-def raw_data_viewer():
-    """原始数据查看器"""
-    if st.session_state.sys['show_raw'] and st.session_state.sys['raw_df'] is not None:
-        with st.expander("📂 原始数据", expanded=True):
-            st.write(f"总记录数：{len(st.session_state.sys['raw_df'])}")
-            st.dataframe(
-                st.session_state.sys['raw_df'],
-                height=500,
-                use_container_width=True
-            )
-            if st.button("❌ 关闭原始数据", key="close_raw"):
-                st.session_state.sys['show_raw'] = False
-
-@st.experimental_fragment
-def cleaning_controller():
-    """数据清洗控制器"""
-    if st.session_state.sys['raw_df'] is not None:
-        st.divider()
-        st.subheader("数据清洗")
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
-            if st.button("🚀 开始清洗", help="启动清洗流程", use_container_width=True):
-                with st.spinner('处理中...'):
-                    start = time.time()
-                    st.session_state.sys['cleaned_df'] = cleaning(
-                        st.session_state.sys['raw_df'].copy()
-                    )
-                    st.session_state.sys['show_cleaned'] = True
-                    st.toast(f"清洗完成，耗时{time.time()-start:.1f}秒")
-
-        with col2:
-            if st.session_state.sys['show_cleaned']:
-                with st.expander("✨ 清洗结果", expanded=True):
-                    st.write(f"有效记录：{len(st.session_state.sys['cleaned_df'])}条")
-                    st.dataframe(
-                        st.session_state.sys['cleaned_df'][
-                            ['昵称','日期','地区','产品','评分','评论']
-                        ],
-                        height=500,
-                        use_container_width=True
-                    )
-                    if st.button("❌ 关闭清洗结果", key="close_clean"):
-                        st.session_state.sys['show_cleaned'] = False
-
-@st.experimental_fragment
-def prediction_viewer():
-    """预测结果查看器"""
-    if st.session_state.sys['cleaned_df'] is not None:
-        st.divider()
-        st.subheader("预测分析")
-        
-        if st.button("🔮 生成推荐指数", help="启动预测模型", use_container_width=True):
-            predict_recommendation()
-        
-        if st.session_state.sys['show_predicted']:
-            st.success("预测结果")
-            st.dataframe(
-                st.session_state.sys['predicted_df'],
-                height=600,
-                use_container_width=True,
-                hide_index=True
-            )
-            st.caption(f"总记录数：{len(st.session_state.sys['predicted_df'])}条")
+def analyze_products(df):
+    """执行产品分析主逻辑"""
+    analysis_results = {}
+    start_time = time.time()  # 记录开始时间
+    
+    with st.status("🔍 深度分析进行中...", expanded=True) as status:
+        # 按产品分组分析
+        for product, group in df.groupby('产品'):
+            status.write(f"正在分析：{product}...")
             
-            csv_data = st.session_state.sys['predicted_df'].to_csv(index=False).encode('utf-8')
+            # 准备数据
+            comments = group['评论'].tolist()
+            scores = group['系统推荐指数'].value_counts().to_dict()
+            
+            # 生成提示词
+            prompt = generate_analysis_prompt(
+                product_name=product,
+                comments=comments,
+                scores=scores
+            )
+            
+            # 调用API
+            analysis_result = call_deepseek_api(prompt)
+            analysis_results[product] = analysis_result
+            
+            
+            
+        duration = time.time() - start_time  # 计算耗时
+        status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")  # 显示耗时
+    
+    return analysis_results
+
+
+
+# ---------------------- 界面布局 ----------------------
+# 文件上传模块
+uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
+                               help="支持UTF-8编码文件，最大100MB")
+
+if uploaded_file and st.session_state.raw_df is None:
+    st.session_state.raw_df = pd.read_csv(uploaded_file)
+
+# 显示原始数据
+if st.session_state.raw_df is not None:
+    with st.expander("📂 永久查看原始数据", expanded=True):
+        st.write(f"原始记录数：{len(st.session_state.raw_df)}")
+        st.dataframe(
+            st.session_state.raw_df,
+            use_container_width=True,
+            height=500  # 设置固定高度启用滚动条
+        )
+        
+# 数据清洗模块
+if st.session_state.raw_df is not None:
+    st.divider()
+    st.subheader("数据清洗模块")
+    
+    col1, col2 = st.columns([1,3])
+    with col1:
+        if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
+            with st.spinner('正在处理数据...'):
+                start_time = time.time()
+                st.session_state.cleaned_df = cleaning(st.session_state.raw_df.copy())
+                st.session_state.processing_time = time.time() - start_time
+
+    if st.session_state.cleaned_df is not None:
+        with col2:
+            if st.button("🔍 查看清洗结果", help="独立查看清洗数据", use_container_width=True):
+                with st.expander("✨ 清洗后数据详情", expanded=True):
+                    st.write(f"清洗后记录数：{len(st.session_state.cleaned_df)}")  # 新增数量显示
+                    st.dataframe(
+                        st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
+                        use_container_width=True,
+                        height=500  # 设置滚动条
+                    )
+
+# 预测模块
+if st.session_state.cleaned_df is not None:
+    st.divider()
+    st.subheader("预测模块")
+    
+    if st.button("🔮 预测推荐指数", help="点击进行推荐指数预测", use_container_width=True):
+        if 'model' not in st.session_state:
+            st.error("模型未加载，无法进行预测！")
+            st.stop()
+        
+        cleaned_df = st.session_state.cleaned_df.copy()
+        
+        with st.status("🧠 正在生成预测...", expanded=True) as status:
+            try:
+                # 特征工程
+                status.write("1. 提取关键词...")
+                cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
+                
+                status.write("2. 计算情感特征...")
+                scores = cleaned_df.apply(calculate_scores, axis=1)
+                cleaned_df[['情感度', '真实性', '参考度']] = scores
+                
+                # TF-IDF转换
+                status.write("3. 文本特征转换...")
+                keywords_tfidf = st.session_state.tfidf.transform(cleaned_df['关键词'])
+                
+                # 构建特征矩阵
+                status.write("4. 合并特征...")
+                numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
+                features = hstack([keywords_tfidf, numeric_features])
+                
+                # 分类编码
+                status.write("5. 处理分类特征...")
+                cleaned_df['地区_编码'] = pd.Categorical(
+                    cleaned_df['地区'], 
+                    categories=st.session_state.region_mapping
+                ).codes
+                cleaned_df['产品_编码'] = pd.Categorical(
+                    cleaned_df['产品'],
+                    categories=st.session_state.product_mapping
+                ).codes
+                final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
+                
+                # 预测
+                status.write("6. 进行模型预测...")
+                predicted_scores = st.session_state.model.predict(final_features)
+                cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
+                
+                # 保存结果
+                st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
+                status.update(label="✅ 预测完成！", state="complete")
+                
+            except Exception as e:
+                status.update(label="❌ 预测出错！", state="error")
+                st.error(f"错误详情：{str(e)}")
+                st.stop()
+
+        # 显示预测结果
+        if st.session_state.predicted_df is not None:
+            st.success("预测结果：")
+            st.dataframe(
+                st.session_state.predicted_df,
+                use_container_width=True,
+                height=600,  # 设置固定高度启用滚动条
+                hide_index=True  # 可选：隐藏默认索引
+            )
+    
+            # 添加数据统计信息
+            st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
+    
+            # 下载预测结果（保持原代码不变）
+            csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="⬇️ 下载预测结果",
-                data=csv_data,
-                file_name='predictions.csv',
+                data=csv,
+                file_name='predicted_scores.csv',
                 mime='text/csv',
-                key='dl_pred'
+                key='prediction_download'
             )
-            if st.button("❌ 关闭预测结果", key="close_pred"):
-                st.session_state.sys['show_predicted'] = False
-
-@st.experimental_fragment
-def analysis_reporter():
-    """分析报告生成器"""
-    if st.session_state.sys['predicted_df'] is not None:
-        st.divider()
-        st.subheader("深度分析")
-        
-        if st.button("📊 生成分析报告", type="primary"):
-            analyze_products()
-        
-        for product in st.session_state.sys['analysis']:
-            if st.session_state.sys['show_analysis'].get(product, False):
-                with st.expander(f"📈 {product} 分析报告", expanded=True):
-                    st.markdown(st.session_state.sys['analysis'][product])
-                    st.download_button(
-                        label=f"⬇️ 下载{product}报告",
-                        data=st.session_state.sys['analysis'][product],
-                        file_name=f"{product}_analysis.md",
-                        mime="text/markdown",
-                        key=f"dl_{product}"
-                    )
-                    if st.button(f"❌ 关闭{product}报告", key=f"close_{product}"):
-                        st.session_state.sys['show_analysis'][product] = False
-
-# ---------------------- 主程序入口 ----------------------
-def main():
-    # 初始化模型
-    if not st.session_state.sys['model']:
-        try:
-            st.session_state.sys.update({
-                'model': joblib.load('model.joblib'),
-                'tfidf': joblib.load('tfidf_vectorizer.joblib'),
-                'region_map': joblib.load('category_mappings.joblib')['region'],
-                'product_map': joblib.load('category_mappings.joblib')['product']
-            })
-        except Exception as e:
-            st.error(f"模型加载失败: {str(e)}")
-            return
-
-    # 页面配置
-    st.set_page_config(page_title="智能数据工厂", layout="wide")
-    st.title("📊 电商评论分析系统")
+            
+# ---------------------- 在预测模块后添加分析模块 ----------------------
+if st.session_state.predicted_df is not None:
+    st.divider()
+    st.subheader("深度分析模块")
     
-    # 功能组件
-    file_uploader()
-    raw_data_viewer()
-    cleaning_controller()
-    prediction_viewer()
-    analysis_reporter()
-    
-    # 自动刷新
-    if any([st.session_state.sys['show_cleaned'], 
-           st.session_state.sys['show_predicted'],
-           any(st.session_state.sys['show_analysis'].values())]):
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
+    if st.button("📊 生成产品分析报告", type="primary"):
+        # 执行分析
+        analysis_results = analyze_products(st.session_state.predicted_df)
+        
+        # 展示结果
+        for product, report in analysis_results.items():
+            with st.expander(f"**{product}** 完整分析报告", expanded=False):
+                st.markdown(report)
+                
+            # 添加下载按钮
+            st.download_button(
+                label=f"⬇️ 下载 {product} 报告",
+                data=report,
+                file_name=f"{product}_analysis.md",
+                mime="text/markdown"
+            )
