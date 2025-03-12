@@ -34,7 +34,7 @@ if 'model' not in st.session_state:
 
 # 页面配置
 st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
-st.title("自动化数据清洗与推荐预测系统")
+st.title("电商用户购买决策AI辅助支持系统的设计与实现")
 
 # ---------------------- 数据清洗函数 ----------------------
 
