@@ -1,3 +1,4 @@
+@@ -1,345 +1,345 @@
 import time  
 import streamlit as st
 import pandas as pd
@@ -13,16 +14,12 @@ import joblib
 import requests
 
 # 初始化session状态
-if 'sys_state' not in st.session_state:
-    st.session_state.sys_state = {
-        'raw_df': None,
-        'cleaned_df': None,
-        'predicted_df': None,
-        'show_raw': True,
-        'show_cleaned': False,
-        'show_predicted': False,
-        'analysis_reports': {}
-    }
+if 'raw_df' not in st.session_state:
+    st.session_state.raw_df = None
+if 'cleaned_df' not in st.session_state:
+    st.session_state.cleaned_df = None
+if 'predicted_df' not in st.session_state:
+    st.session_state.predicted_df = None
 
 # 加载模型和预处理对象
 if 'model' not in st.session_state:
@@ -193,6 +190,7 @@ def analyze_products(df):
             # 调用API
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
+            
             
             
             
