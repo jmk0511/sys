@@ -80,9 +80,15 @@ def cleaning(df):
         st.error(f"错误详情：{str(e)}")
         return df
 
+try:
+    with open('sensitive_words.txt', 'r', encoding='utf-8') as file:
+        sensitive_words = [line.strip() for line in file if line.strip()]
+except IOError:
+    print("文件读取失败，请检查文件路径")
+
 def build_rebate_pattern():
     """构建返现检测正则"""
-    base_keywords = ['好评返现', '晒图奖励', '评价有礼']
+    base_keywords = [kw for kw in rebate_keywords if re.match(r'^[\u4e00-\u9fa5]+$', kw)]
     patterns = []
     for kw in base_keywords:
         full_pinyin = ''.join(lazy_pinyin(kw, style=Style.NORMAL))
