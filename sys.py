@@ -228,32 +228,42 @@ if st.session_state.cleaned_df is not None:
                     st.session_state.cleaned_df.copy()
                 )
                 
+    # 修改原可视化部分的代码（约第236行附近）
     if st.session_state.predicted_df is not None:
         with col_display:
             with st.expander("📊 预测结果分析", expanded=True):
+            # 确保列名存在（添加容错处理）
+                if '推荐指数' not in st.session_state.predicted_df.columns:
+                    st.error("预测结果异常：推荐指数列未生成")
+                else:
                 # 结果可视化
-                st.write("推荐指数分布:")
-                hist_data = pd.cut(st.session_state.predicted_df['推荐指数'], 
-                                 bins=[0,5,8,10], 
-                                 labels=['差评', '中评', '好评'])
-                st.bar_chart(hist_data.value_counts())
+                    st.write("推荐指数分布:")
+                    try:
+                    # 修正pd.cut参数传递方式
+                        hist_data = pd.cut(
+                            st.session_state.predicted_df['推荐指数'], 
+                            bins=[0, 5, 8, 10], 
+                            labels=['差评', '中评', '好评'],
+                            include_lowest=True  # 包含最小值边界
+                        )
+                        st.bar_chart(hist_data.value_counts())
+                    except KeyError:
+                        st.error("无法访问推荐指数列，请检查特征工程步骤")
                 
-                # 抽样展示
-                st.write("抽样结果（含预测值）:")
-                sample_data = st.session_state.predicted_df.sample(3)[[
-                    '产品', '评论', '推荐指数'
-                ]]
-                st.dataframe(sample_data.style.applymap(
-                    lambda x: "background-color: #e6ffe6" if x>=8 else 
-                    ("#fff3e6" if x>=5 else "#ffe6e6"), 
-                    subset=['推荐指数']
-                ))
+                # 抽样展示（添加列名验证）
+                    st.write("抽样结果（含预测值）:")
+                    sample_columns = ['产品', '评论', '推荐指数']
+                    available_cols = [col for col in sample_columns 
+                                    if col in st.session_state.predicted_df.columns]
                 
-                # 下载功能
-                csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ 下载完整预测数据",
-                    data=csv,
-                    file_name='predicted_data.csv',
-                    mime='text/csv'
-                )                    
+                    if len(available_cols) == 3:
+                        sample_data = st.session_state.predicted_df.sample(3)[available_cols]
+                        st.dataframe(
+                            sample_data.style.applymap(
+                                lambda x: "background-color: #e6ffe6" if x>=8 else 
+                                ("#fff3e6" if x>=5 else "#ffe6e6"), 
+                                subset=['推荐指数']
+                            )
+                        )
+                    else:
+                        st.error("数据列缺失，现有列：" + ", ".join(st.session_state.predicted_df.columns))               
