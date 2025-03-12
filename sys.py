@@ -185,7 +185,7 @@ def analyze_products(df):
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
             
-            time.sleep(1)  # 防止速率限制
+            time.sleep(0.08)  # 防止速率限制
             
         status.update(label="✅ 分析完成！", state="complete")
     
