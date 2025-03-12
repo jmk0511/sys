@@ -140,7 +140,7 @@ def generate_analysis_prompt(product_name, comments, scores):
 
 def call_deepseek_api(prompt):
     """调用DeepSeek API"""
-    api_key = "sk-efe53c124a9749e99ba1645211040aa4"  # 正式使用请改用 secrets
+    api_key = st.secrets["DEEPSEEK_API_KEY"]  # 正式使用请改用 secrets
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
