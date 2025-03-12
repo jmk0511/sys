@@ -1,4 +1,4 @@
-
+@@ -1,345 +1,345 @@
 import time  
 import streamlit as st
 import pandas as pd
@@ -34,20 +34,9 @@ if 'model' not in st.session_state:
 
 # 页面配置
 st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
-st.title("电商用户购买决策AI辅助支持系统的设计与实现")
+st.title("自动化数据清洗与推荐预测系统")
 
 # ---------------------- 数据清洗函数 ----------------------
-
-# 全局变量声明
-global sensitive_words, rebate_keywords
-
-# 文件读取与异常处理
-try:
-    with open('rebate_keywords.txt', 'r', encoding='utf-8') as file:
-        rebate_keywords = [line.strip() for line in file if line.strip()]
-except IOError:
-    print("文件读取失败，请检查文件路径")
-
 def cleaning(df):
     """核心清洗逻辑"""
     progress = st.progress(0)
@@ -94,30 +83,18 @@ def cleaning(df):
 
 def build_rebate_pattern():
     """构建返现检测正则"""
-    base_keywords = [kw for kw in rebate_keywords if re.match(r'^[\u4e00-\u9fa5]+$', kw)]
+    base_keywords = ['好评返现', '晒图奖励', '评价有礼']
     patterns = []
     for kw in base_keywords:
         full_pinyin = ''.join(lazy_pinyin(kw, style=Style.NORMAL))
         patterns.append(re.escape(full_pinyin))
         initials = ''.join([p[0] for p in lazy_pinyin(kw, style=Style.INITIALS) if p])
-        # 原词匹配
-        patterns.append(re.escape(kw))
-        # 全拼转换
-        full_pinyin = ''.join(lazy_pinyin(kw, style=Style.NORMAL))
-        patterns.append(full_pinyin)
-        # 首字母转换
-        initials = ''.join([
-            p[0] if p else ''
-            for p in lazy_pinyin(kw, style=Style.INITIALS)
-        ])        
         if initials:
             patterns.append(re.escape(initials))
     patterns += [
         r'返\s*现', r'评.{0,3}返', 
         r'加\s*微', r'领\s*红\s*包',
-        r'\d+\s*元\s*奖',
-        r'返[^ ]*\d+元', r'红包\d+元', 
-        r'加微[信信]', r'领[取取]优惠'
+        r'\d+\s*元\s*奖'
     ]
     return re.compile('|'.join(patterns), flags=re.IGNORECASE)
 
@@ -214,7 +191,7 @@ def analyze_products(df):
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
             
-            
+            time.sleep(0.08)
             
             
         duration = time.time() - start_time  # 计算耗时
