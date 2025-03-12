@@ -46,21 +46,27 @@ def cleaning(df):
         status.write("1. 过滤汉字少于5个的评论...")
         df['汉字数'] = df['评论'].apply(lambda x: len(re.findall(r'[\u4e00-\u9fff]', str(x))))
         df = df[df['汉字数'] > 5].drop(columns=['汉字数'])
-        progress.progress(20)
+        progress.progress(16)
 
-        # 步骤2：重复评论过滤
-        status.write("2. 检测重复评论...")
+        # 新增步骤：删除产品为空的数据
+        status.write("2. 删除产品信息缺失的评论...")
+        original_count = len(df)
+        df = df.dropna(subset=['产品'])  # 关键修改点[1,5](@ref)
+        removed_count = original_count - len(df)
+        status.write(f"已清除{removed_count}条无产品信息的记录")
+        progress.progress(32)
+
+        # 原步骤调整为后续步骤
+        status.write("3. 检测重复评论...")
         df = df[~df.duplicated(subset=['评论'], keep='first')]
-        progress.progress(40)
+        progress.progress(48)
 
-        # 步骤3：返现检测
-        status.write("3. 检测好评返现...")
+        status.write("4. 检测好评返现...")
         rebate_pattern = build_rebate_pattern()
         df = df[~df['评论'].str.contains(rebate_pattern, na=False)]
-        progress.progress(60)
+        progress.progress(64)
 
-        # 步骤4：水军检测
-        status.write("4. 检测可疑水军...")
+        status.write("5. 检测可疑水军...")
         df = filter_spam_comments(df)
         progress.progress(80)
 
