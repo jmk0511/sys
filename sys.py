@@ -151,7 +151,7 @@ if st.session_state.raw_df is not None:
             if st.button("🔍 查看清洗结果", help="独立查看清洗数据", use_container_width=True):
                 with st.expander("✨ 清洗后数据详情", expanded=True):
                     st.dataframe(
-                        st.session_state.cleaned_df[['产品', '评论']],
+                        st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
                         use_container_width=True,
                         height=400
                     )
