@@ -190,7 +190,7 @@ def analyze_products(df):
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
             
-            time.sleep(0.08)
+            
             
         duration = time.time() - start_time  # 计算耗时
         status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")  # 显示耗时
