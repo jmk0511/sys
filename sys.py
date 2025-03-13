@@ -174,7 +174,7 @@ def call_deepseek_api(prompt):
         "Content-Type": "application/json"
     }
     data = {
-        "model": "deepseek-chat-1.3",
+        "model": "deepseek-chat",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
         "max_tokens": 50000
