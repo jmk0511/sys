@@ -11,6 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import hstack
 import joblib
 import requests
+import os
 
 def load_rebate_keywords():
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
