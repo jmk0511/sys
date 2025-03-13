@@ -12,6 +12,8 @@ from scipy.sparse import hstack
 import joblib
 import requests
 import os
+import io
+import zipfile  # 新增ZIP压缩库
 
 def load_rebate_keywords():
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
@@ -72,8 +74,8 @@ def cleaning(df):
 
         # 步骤2.5：标准化产品名称（新增功能）
         status.write("2.5 标准化产品名称格式...")
-        df['产品'] = df['产品'].str.replace(r'[^\w\s\u4e00-\u9fa5]', '', regex=True)  # 移除非文字符号
-        df['产品'] = df['产品'].str.strip().str.upper()  # 去除空格并统一大写
+        df['产品'] = df['产品'].str.replace(r'[^\w\s\u4e00-\u9fa5]', '', regex=True)
+        df['产品'] = df['产品'].str.strip().str.upper()
         progress.progress(40)
 
         # 步骤3：检测重复评论
@@ -153,7 +155,6 @@ def calculate_scores(row):
 
 # ----------------------  DeepSeek 分析模块 ----------------------
 def generate_analysis_prompt(product_name, comments, scores):
-    """构建分析提示词模板"""
     return f"""请根据电商评论数据生成产品分析报告，要求：
 1. 产品名称：{product_name}
 2. 基于以下{len(comments)}条真实评论（评分分布：{scores}）：
@@ -167,17 +168,16 @@ def generate_analysis_prompt(product_name, comments, scores):
 请用markdown格式输出，避免专业术语，保持口语化"""
 
 def call_deepseek_api(prompt):
-    """调用DeepSeek API"""
-    api_key = st.secrets["DEEPSEEK_API_KEY"]  # 正式使用请改用 secrets
+    api_key = st.secrets["DEEPSEEK_API_KEY"]
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     data = {
-        "model": "deepseek-chat",
+        "model": "deepseek-chat-1.3",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
-        "max_tokens": 2000
+        "max_tokens": 50000
     }
     
     try:
@@ -190,39 +190,31 @@ def call_deepseek_api(prompt):
         return f"请求失败：{str(e)}"
 
 def analyze_products(df):
-    """执行产品分析主逻辑"""
     analysis_results = {}
-    start_time = time.time()  # 记录开始时间
+    start_time = time.time()
     
     with st.status("🔍 深度分析进行中...", expanded=True) as status:
-        # 按产品分组分析
         for product, group in df.groupby('产品'):
             status.write(f"正在分析：{product}...")
             
-            # 准备数据
             comments = group['评论'].tolist()
             scores = group['系统推荐指数'].value_counts().to_dict()
             
-            # 生成提示词
             prompt = generate_analysis_prompt(
                 product_name=product,
                 comments=comments,
                 scores=scores
             )
             
-            # 调用API
             analysis_result = call_deepseek_api(prompt)
             analysis_results[product] = analysis_result
             
-            time.sleep(0.08)
+            time.sleep(0.5)
             
-            
-        duration = time.time() - start_time  # 计算耗时
-        status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")  # 显示耗时
+        duration = time.time() - start_time
+        status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")
     
     return analysis_results
-
-
 
 # ---------------------- 界面布局 ----------------------
 uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], help="支持UTF-8编码文件，最大100MB")
@@ -240,24 +232,21 @@ if st.session_state.raw_df is not None:
     st.divider()
     st.subheader("数据清洗模块")
     
-    col1, col2 = st.columns([1,3])
-    with col1:
-        if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
-            with st.spinner('正在处理数据...'):
-                start_time = time.time()
-                st.session_state.cleaned_df = cleaning(st.session_state.raw_df.copy())
-                st.session_state.processing_time = time.time() - start_time
+    if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
+        with st.spinner('正在处理数据...'):
+            start_time = time.time()
+            st.session_state.cleaned_df = cleaning(st.session_state.raw_df.copy())
+            st.session_state.processing_time = time.time() - start_time
 
+    # 直接展示清洗结果（移除查看按钮）
     if st.session_state.cleaned_df is not None:
-        with col2:
-            if st.button("🔍 查看清洗结果", help="独立查看清洗数据", use_container_width=True):
-                with st.expander("✨ 清洗后数据详情", expanded=True):
-                    st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
-                    st.dataframe(
-                        st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
-                        use_container_width=True,
-                        height=500
-                    )
+        with st.expander("✨ 清洗后数据详情", expanded=True):
+            st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
+            st.dataframe(
+                st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
+                use_container_width=True,
+                height=500
+            )
 
 # 预测模块
 if st.session_state.cleaned_df is not None:
@@ -273,7 +262,6 @@ if st.session_state.cleaned_df is not None:
         
         with st.status("🧠 正在生成预测...", expanded=True) as status:
             try:
-                # 特征工程（保持不变）
                 status.write("1. 提取关键词...")
                 cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
                 
@@ -281,16 +269,13 @@ if st.session_state.cleaned_df is not None:
                 scores = cleaned_df.apply(calculate_scores, axis=1)
                 cleaned_df[['情感度', '真实性', '参考度']] = scores
                 
-                # TF-IDF转换
                 status.write("3. 文本特征转换...")
                 keywords_tfidf = st.session_state.tfidf.transform(cleaned_df['关键词'])
                 
-                # 构建特征矩阵
                 status.write("4. 合并特征...")
                 numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
                 features = hstack([keywords_tfidf, numeric_features])
                 
-                # 分类编码
                 status.write("5. 处理分类特征...")
                 cleaned_df['地区_编码'] = pd.Categorical(
                     cleaned_df['地区'], 
@@ -302,12 +287,10 @@ if st.session_state.cleaned_df is not None:
                 ).codes
                 final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
                 
-                # 预测
                 status.write("6. 进行模型预测...")
                 predicted_scores = st.session_state.model.predict(final_features)
                 cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
                 
-                # 保存结果
                 st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
                 status.update(label="✅ 预测完成！", state="complete")
                 
@@ -319,11 +302,8 @@ if st.session_state.cleaned_df is not None:
         if st.session_state.predicted_df is not None:
             st.success("预测结果：")
             st.dataframe(st.session_state.predicted_df, use_container_width=True, height=600, hide_index=True)
-    
-            # 添加数据统计信息
             st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
     
-            # 下载预测结果（保持原代码不变）
             csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="⬇️ 下载预测结果",
@@ -333,24 +313,34 @@ if st.session_state.cleaned_df is not None:
                 key='prediction_download'
             )
             
-# ---------------------- 在预测模块后添加分析模块 ----------------------
+# ---------------------- 分析模块 ----------------------
 if st.session_state.predicted_df is not None:
     st.divider()
     st.subheader("深度分析模块")
     
     if st.button("📊 生成产品分析报告", type="primary"):
-        # 执行分析
         analysis_results = analyze_products(st.session_state.predicted_df)
+        st.session_state.analysis_reports = analysis_results  # 存储报告到session
         
-        # 展示结果
+        # 展示所有报告
         for product, report in analysis_results.items():
             with st.expander(f"**{product}** 完整分析报告", expanded=False):
                 st.markdown(report)
-                
-            # 添加下载按钮
+
+        # 添加统一下载按钮
+        if analysis_results:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                for product, report in analysis_results.items():
+                    # 处理特殊字符文件名
+                    safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
+                    zip_file.writestr(f"{safe_name}_analysis.md", report)
+            zip_buffer.seek(0)
+            
             st.download_button(
-                label=f"⬇️ 下载 {product} 报告",
-                data=report,
-                file_name=f"{product}_analysis.md",
-                mime="text/markdown"
+                label="⬇️ 下载全部分析报告",
+                data=zip_buffer,
+                file_name="产品分析报告.zip",
+                mime="application/zip",
+                key='full_report_download'
             )
