@@ -177,7 +177,7 @@ def call_deepseek_api(prompt):
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
-        "max_tokens": 50000
+        "max_tokens": 5000
     }
     
     try:
