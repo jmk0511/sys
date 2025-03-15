@@ -13,7 +13,7 @@ import joblib
 import requests
 import os
 import io
-import zipfile  # 新增ZIP压缩库
+import zipfile  
 
 def load_rebate_keywords():
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
@@ -49,22 +49,22 @@ if 'model' not in st.session_state:
     except Exception as e:
         st.error(f"初始化失败: {str(e)}")
 
-st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
+st.set_page_config(page_title="电商用户购买决策AI辅助支持系统", layout="wide")
 st.title("电商用户购买决策AI辅助支持系统")
 
-# ---------------------- 数据清洗函数（已集成产品名称标准化）----------------------
+# ---------------------- 数据清洗----------------------
 def cleaning(df):
     progress = st.progress(0)
     status = st.status("🚀 正在处理数据...")
     
     try:
-        # 步骤1：基础过滤
+        # 基础过滤
         status.write("1. 过滤汉字少于5个的评论...")
         df['汉字数'] = df['评论'].apply(lambda x: len(re.findall(r'[\u4e00-\u9fff]', str(x))))
         df = df[df['汉字数'] > 5].drop(columns=['汉字数'])
         progress.progress(16)
 
-        # 步骤2：删除产品为空的数据
+        # 删除产品为空的数据
         status.write("2. 删除产品信息缺失的评论...")
         original_count = len(df)
         df = df.dropna(subset=['产品'])
@@ -72,24 +72,24 @@ def cleaning(df):
         status.write(f"已清除{removed_count}条无产品信息的记录")
         progress.progress(32)
 
-        # 步骤2.5：标准化产品名称（新增功能）
+        # 标准化产品名称
         status.write("2.5 标准化产品名称格式...")
         df['产品'] = df['产品'].str.replace(r'[^\w\s\u4e00-\u9fa5]', '', regex=True)
         df['产品'] = df['产品'].str.strip().str.upper()
         progress.progress(40)
 
-        # 步骤3：检测重复评论
+        #检测重复评论
         status.write("3. 检测重复评论...")
         df = df[~df.duplicated(subset=['评论'], keep='first')]
         progress.progress(48)
 
-        # 步骤4：检测好评返现
+        # 检测好评返现
         status.write("4. 检测好评返现...")
         rebate_pattern = build_rebate_pattern()
         df = df[~df['评论'].str.contains(rebate_pattern, na=False)]
         progress.progress(64)
 
-        # 步骤5：检测可疑水军
+        # 检测可疑水军
         status.write("5. 检测可疑水军...")
         df = filter_spam_comments(df)
         progress.progress(80)
