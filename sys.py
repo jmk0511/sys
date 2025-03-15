@@ -50,7 +50,7 @@ if 'model' not in st.session_state:
         st.error(f"初始化失败: {str(e)}")
 
 st.set_page_config(page_title="CSV数据清洗工具", layout="wide")
-st.title("自动化数据清洗与推荐预测系统")
+st.title("电商用户购买决策AI辅助支持系统")
 
 # ---------------------- 数据清洗函数（已集成产品名称标准化）----------------------
 def cleaning(df):
