@@ -334,7 +334,7 @@ if st.session_state.predicted_df is not None:
                 for product, report in analysis_results.items():
                     # 处理特殊字符文件名
                     safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
-                    zip_file.writestr(f"{safe_name}_analysis.txt", report)
+                    zip_file.writestr(f"{safe_name}_分析.txt", report)
             zip_buffer.seek(0)
             
             st.download_button(
