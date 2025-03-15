@@ -238,7 +238,7 @@ if st.session_state.raw_df is not None:
             st.session_state.cleaned_df = cleaning(st.session_state.raw_df.copy())
             st.session_state.processing_time = time.time() - start_time
 
-    # 直接展示清洗结果（移除查看按钮）
+    # 直接展示清洗结果
     if st.session_state.cleaned_df is not None:
         with st.expander("✨ 清洗后数据详情", expanded=True):
             st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
@@ -327,14 +327,14 @@ if st.session_state.predicted_df is not None:
             with st.expander(f"**{product}** 完整分析报告", expanded=False):
                 st.markdown(report)
 
-        # 添加统一下载按钮
+        # 统一下载按钮
         if analysis_results:
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
                 for product, report in analysis_results.items():
                     # 处理特殊字符文件名
                     safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
-                    zip_file.writestr(f"{safe_name}_analysis.md", report)
+                    zip_file.writestr(f"{safe_name}_analysis.txt", report)
             zip_buffer.seek(0)
             
             st.download_button(
