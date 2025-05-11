@@ -19,10 +19,9 @@ import bcrypt
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
-    """初始化数据库连接（新增历史记录字段）"""
+    """初始化数据库连接"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
-    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +30,6 @@ def init_auth_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_data (
             data_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,90 +48,52 @@ def init_auth_db():
 
 @st.cache_resource
 def get_auth_db():
+    """获取数据库连接"""
     return init_auth_db()
 
-# ====================== 新增历史记录管理模块 ======================
-def create_history_entry(user_id):
-    """生成唯一历史记录ID（网页1）"""
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    return f"{user_id}_{timestamp}"
+# ====================== 认证入口页面 ======================
+def auth_gate():  # 确保在main_interface之前定义
+    """认证入口页面"""
+    st.title("电商决策支持系统")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.expander("🔑 用户登录", expanded=True):
+            login_username = st.text_input("用户名", key="login_user")
+            login_password = st.text_input("密码", type="password", key="login_pw")
+            if st.button("登录"):
+                if not login_username or not login_password:
+                    st.error("请输入用户名和密码")
+                else:
+                    success, msg, user_id = verify_login(login_username, login_password)
+                    if success:
+                        st.session_state.update({
+                            'logged_in': True,
+                            'username': login_username,
+                            'user_id': user_id,
+                            'raw_df': load_user_data(user_id, 'raw_data'),
+                            'cleaned_df': load_user_data(user_id, 'cleaned_data'),
+                            'predicted_df': load_user_data(user_id, 'predicted_data')
+                        })
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-def save_full_process_data(user_id, history_id, raw_df, cleaned_df, predicted_df, analysis_reports):
-    """保存完整分析流程数据（网页3）"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            # 序列化数据
-            raw_buffer = io.BytesIO()
-            raw_df.to_parquet(raw_buffer)
-            cleaned_buffer = io.BytesIO()
-            cleaned_df.to_parquet(cleaned_buffer)
-            predicted_buffer = io.BytesIO()
-            predicted_df.to_parquet(predicted_buffer)
-            
-            # 压缩分析报告（网页5）
-            report_buffer = io.BytesIO()
-            with zipfile.ZipFile(report_buffer, 'w') as zip_file:
-                for product, report in analysis_reports.items():
-                    safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
-                    zip_file.writestr(f"{safe_name}_分析.txt", report)
-            
-            # 插入数据库（网页3）
-            conn.execute('''
-                INSERT INTO user_data 
-                (user_id, history_id, raw_data, cleaned_data, predicted_data, analysis_report)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, history_id,
-                  raw_buffer.getvalue(),
-                  cleaned_buffer.getvalue(),
-                  predicted_buffer.getvalue(),
-                  report_buffer.getvalue()))
-            conn.commit()
-            return True
-        except Exception as e:
-            st.error(f"历史保存失败: {str(e)}")
-            return False
-
-def load_history_data(user_id, history_id):
-    """加载历史记录（网页7）"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        result = conn.execute('''
-            SELECT raw_data, cleaned_data, predicted_data, analysis_report 
-            FROM user_data 
-            WHERE user_id = ? AND history_id = ?
-        ''', (user_id, history_id)).fetchone()
-        
-        if result:
-            return {
-                'raw': pd.read_parquet(io.BytesIO(result[0])),
-                'cleaned': pd.read_parquet(io.BytesIO(result[1])),
-                'predicted': pd.read_parquet(io.BytesIO(result[2])),
-                'report': result[3]
-            }
-        return None
-
-def get_user_history(user_id):
-    """获取用户历史记录列表（网页2）"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        return conn.execute('''
-            SELECT DISTINCT history_id, upload_time 
-            FROM user_data 
-            WHERE user_id = ?
-            ORDER BY upload_time DESC
-        ''', (user_id,)).fetchall()
-
-def delete_history(user_id, history_id):
-    """删除历史记录（网页4）"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            conn.execute('''
-                DELETE FROM user_data 
-                WHERE user_id = ? AND history_id = ?
-            ''', (user_id, history_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            st.error(f"删除失败: {str(e)}")
-            return False
+    with col2:
+        with st.expander("📝 新用户注册", expanded=True):
+            reg_username = st.text_input("注册用户名", key="reg_user")
+            reg_password = st.text_input("注册密码", type="password", key="reg_pw")
+            if st.button("立即注册"):
+                if len(reg_password) < 6:
+                    st.error("密码至少需要6位")
+                elif not reg_username:
+                    st.error("请输入用户名")
+                else:
+                    success, msg = register_user(reg_username, reg_password)
+                    if success:
+                        st.success(msg + "，请返回登录")
+                    else:
+                        st.error(msg)
 
 # ====================== 修改后的主界面模块 ======================
 def main_interface():
@@ -278,8 +238,6 @@ def main_interface():
             )
 
 
-
-
 # ====================== 主程序入口 ======================
 if __name__ == "__main__":
     # 初始化模型和数据库
@@ -310,6 +268,6 @@ if __name__ == "__main__":
     
     # 流程控制
     if not st.session_state.logged_in:
-        auth_gate()
+        auth_gate()  # 现在auth_gate已经正确定义
     else:
         main_interface()
