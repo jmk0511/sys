@@ -24,6 +24,10 @@ def init_auth_db():
     """初始化数据库连接"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
+
+    # 启用外键约束
+    cursor.execute("PRAGMA foreign_keys = ON")
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +37,6 @@ def init_auth_db():
         )
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_data (
             data_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -41,12 +44,15 @@ def init_auth_db():
             cleaned_data BLOB,
             predicted_data BLOB,
             data_hash TEXT UNIQUE,
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     ''')
     # 新增预测记录表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS prediction_records (
+            record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,            
             record_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             login_time DATETIME NOT NULL,
@@ -62,6 +68,9 @@ def init_auth_db():
         CREATE TABLE IF NOT EXISTS analysis_reports (
             report_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,            
+            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             login_time DATETIME NOT NULL,
             product_name TEXT NOT NULL,
             summary TEXT,
@@ -71,7 +80,15 @@ def init_auth_db():
             advice TEXT,
             UNIQUE(user_id, product_name)
         )
-    ''')    
+    ''')
+    
+    admin_hash = bcrypt.hashpw("KJM666666".encode('utf-8'), bcrypt.gensalt())
+    cursor.execute('''
+        INSERT OR IGNORE INTO users 
+        (username, password_hash) 
+        VALUES (?, ?)
+    ''', ("sysjmkk", admin_hash.decode('utf-8')))
+    
     conn.commit()
     return conn
 
@@ -141,9 +158,12 @@ def verify_login(username, password):
         return False, "用户不存在", None
     
     if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
-        return True, "登录成功", user[0]
+        is_admin = (username == "sysjmkk")  # 新增管理员标识
+        return True, "登录成功", user[0], is_admin  # 返回参数增加
     else:
-        return False, "密码错误", None
+        return False, "密码错误", None, False
+    
+    
 
 # ====================== 数据管理模块 ======================
 def save_user_data(user_id, data_type, df):
@@ -476,12 +496,13 @@ def auth_gate():
                 if not login_username or not login_password:
                     st.error("请输入用户名和密码")
                 else:
-                    success, msg, user_id = verify_login(login_username, login_password)
+                    success, msg, user_id, is_admin = verify_login(login_username, login_password)
                     if success:
                         st.session_state.update({
                             'logged_in': True,
                             'username': login_username,
                             'user_id': user_id,
+                            'is_admin': is_admin,  # 新增管理员状态记录
                             'raw_df': load_user_data(user_id, 'raw_data'),
                             'cleaned_df': load_user_data(user_id, 'cleaned_data'),
                             'predicted_df': load_user_data(user_id, 'predicted_data')
@@ -506,8 +527,55 @@ def auth_gate():
                     else:
                         st.error(msg)
 
+def admin_panel():
+    """管理员控制面板"""
+    st.sidebar.subheader("🔧 管理员工具")
+    
+    with st.expander("🚨 用户管理", expanded=True):
+        # 获取所有用户列表（网页5方案）
+        conn = get_auth_db()
+        users = conn.execute('SELECT id, username FROM users').fetchall()
+        user_options = {u[0]: f"ID:{u[0]} | {u[1]}" for u in users if u[1] != "sysjmkk"}
+        
+        selected_user = st.selectbox("选择用户", options=user_options.values())
+        user_id_to_delete = [k for k, v in user_options.items() if v == selected_user][0]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("❌ 删除用户所有数据", help="将级联删除该用户全部记录"):
+                try:
+                    conn.execute('DELETE FROM users WHERE id=?', (user_id_to_delete,))
+                    conn.execute('DELETE FROM user_data WHERE user_id=?', (user_id_to_delete,))
+                    conn.execute('DELETE FROM prediction_records WHERE user_id=?', (user_id_to_delete,))
+                    conn.execute('DELETE FROM analysis_reports WHERE user_id=?', (user_id_to_delete,))
+                    conn.commit()
+                    st.success(f"已删除用户{selected_user}所有数据")
+                except Exception as e:
+                    st.error(f"删除失败: {str(e)}")
+        
+        with col2:
+            if st.button("🗑️ 清除用户最新数据", help="仅删除最近上传的数据"):
+                try:
+                    # 获取最新数据ID（网页6方案）
+                    latest_data = conn.execute('''
+                        SELECT data_id FROM user_data 
+                        WHERE user_id=?
+                        ORDER BY data_id DESC LIMIT 1
+                    ''', (user_id_to_delete,)).fetchone()
+                    
+                    if latest_data:
+                        conn.execute('DELETE FROM user_data WHERE data_id=?', (latest_data[0],))
+                        conn.commit()
+                        st.success(f"已删除用户{selected_user}最新数据")
+                except Exception as e:
+                    st.error(f"删除失败: {str(e)}")
+
 def main_interface():
     """主业务界面"""
+    if st.session_state.is_admin:
+        admin_panel()
+        st.divider()
+            
     with st.sidebar:
         st.subheader("📜 历史记录中心")
         record_type = st.selectbox("选择记录类型", 
