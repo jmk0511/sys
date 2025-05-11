@@ -20,8 +20,9 @@ from pathlib import Path
 
 # ====================== 新增用户认证模块 ======================
 def init_auth_db():
-    """初始化认证数据库"""
-    conn = sqlite3.connect('user_auth.db')
+    """初始化认证数据库（关键修改点）"""
+    # 添加check_same_thread=False参数[1,6](@ref)
+    conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -47,38 +48,52 @@ def init_auth_db():
 
 @st.cache_resource
 def get_auth_db():
-    """获取认证数据库连接"""
+    """获取数据库连接（保持缓存机制）[7](@ref)"""
     return init_auth_db()
 
-def register_user(username, password):
-    """用户注册逻辑"""
-    conn = get_auth_db()
-    try:
-        if conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone():
-            return False, "用户名已存在"
-        
-        hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        conn.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', 
-                    (username, hashed_pw.decode('utf-8')))
-        conn.commit()
-        return True, "注册成功"
-    except Exception as e:
-        return False, str(e)
+# ====================== 用户数据管理模块 ======================
+def save_user_data(user_id, data_type, df):
+    """保存数据时创建新连接（关键修改点）"""
+    # 每次操作创建新连接避免线程冲突[3,9](@ref)
+    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
+        try:
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False)
+            buffer.seek(0)
+            
+            update_query = f'''
+                UPDATE user_data 
+                SET {data_type} = ?
+                WHERE user_id = ? 
+                ORDER BY data_id DESC 
+                LIMIT 1
+            '''
+            conn.execute(update_query, (buffer.read(), user_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            st.error(f"数据保存失败: {str(e)}")
+            return False
 
-def verify_login(username, password):
-    """用户登录验证"""
-    conn = get_auth_db()
-    user = conn.execute('''
-        SELECT id, password_hash FROM users WHERE username = ?
-    ''', (username,)).fetchone()
-    
-    if not user:
-        return False, "用户不存在", None
-    
-    if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
-        return True, "登录成功", user[0]
-    else:
-        return False, "密码错误", None
+def load_user_data(user_id, data_type):
+    """加载数据时创建新连接"""
+    # 使用with语句确保连接正确关闭[8](@ref)
+    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
+        try:
+            query = f'''
+                SELECT {data_type} 
+                FROM user_data 
+                WHERE user_id = ?
+                ORDER BY data_id DESC 
+                LIMIT 1
+            '''
+            result = conn.execute(query, (user_id,)).fetchone()
+            if result and result[0]:
+                return pd.read_parquet(io.BytesIO(result[0]))
+            return None
+        except Exception as e:
+            st.error(f"数据加载失败: {str(e)}")
+            return None
 
 # ====================== 原有业务模块（完整保留）======================
 def load_rebate_keywords():
