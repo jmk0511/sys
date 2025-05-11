@@ -116,9 +116,10 @@ def save_user_data(user_id, df):
         # 插入主记录
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO user_data (user_id, raw_data)
-            VALUES (?, ?)
-        ''', (user_id, df.to_json()))
+            INSERT INTO user_data 
+            (user_id, raw_data, history_id)  -- 显式包含字段
+            VALUES (?, ?, ?)  -- 新增占位符
+        ''', (user_id, df.to_json(), 0))  # 给history_id赋默认值
         
         # 获取最新data_id
         data_id = cursor.lastrowid
