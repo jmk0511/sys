@@ -4,7 +4,6 @@ import pandas as pd
 import re
 import jieba
 import numpy as np
-from pymysql import converters
 from pypinyin import lazy_pinyin, Style
 from datetime import datetime
 from snownlp import SnowNLP
