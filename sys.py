@@ -545,7 +545,7 @@ def main_interface():
                 start_time = time.time()
                 cleaned_df = cleaning(st.session_state.raw_df.copy())
                 if save_user_data(st.session_state.user_id, 'cleaned_data', cleaned_df):
-                    st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]               
+                                   
                     st.session_state.cleaned_df = cleaned_df
                 st.session_state.processing_time = time.time() - start_time
 
@@ -607,6 +607,7 @@ def main_interface():
                     cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
                 
                     if save_user_data(st.session_state.user_id, 'predicted_data', cleaned_df[['产品', '评论', '系统推荐指数']]):
+                        save_prediction_record(st.session_state.user_id, cleaned_df)
                         st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
                         status.update(label="✅ 预测完成！", state="complete")
                     
