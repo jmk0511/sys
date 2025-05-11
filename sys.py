@@ -42,29 +42,6 @@ def init_auth_db():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS prediction_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            login_time DATETIME,
-            product_name TEXT,
-            comment TEXT,
-            recommendation_score INTEGER
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS analysis_report_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            login_time DATETIME,
-            product_name TEXT,
-            product_summary TEXT,
-            recommendation_index TEXT,
-            main_advantages TEXT,
-            main_disadvantages TEXT,
-            purchase_advice TEXT
-        )
-    ''')
     conn.commit()
     return conn
 
@@ -144,58 +121,6 @@ def load_user_data(user_id, data_type):
         except Exception as e:
             st.error(f"数据加载失败: {str(e)}")
             return None
-
-def save_prediction_history(username, login_time, predicted_df):
-    conn = get_auth_db()
-    try:
-        with conn:  # 使用事务处理
-            for _, row in predicted_df.iterrows():
-                conn.execute(...)
-        # 强制刷新缓存和状态
-        st.cache_data.clear()
-        st.session_state.predicted_df = None
-        st.toast("数据已保存，正在刷新历史记录...", icon="✅")
-        time.sleep(0.5)
-        st.rerun()  # 触发页面刷新
-        return True
-    except Exception as e:
-        st.error(f"保存失败: {str(e)}")
-        return False
-
-def parse_analysis_report(report):
-    """解析分析报告内容"""
-    def extract_section(title, text):
-        match = re.search(rf'{title}\s*([^\n]+)', text)
-        return match.group(1).strip() if match else ''
-
-    return {
-        'product_summary': extract_section('【产品总结】', report),
-        'recommendation_index': extract_section('【推荐指数】', report),
-        'main_advantages': extract_section('【主要优点】', report),
-        'main_disadvantages': extract_section('【主要缺点】', report),
-        'purchase_advice': extract_section('【购买建议】', report)
-    }
-
-def save_analysis_report_history(username, login_time, analysis_results):
-    """保存分析报告到数据库"""
-    conn = get_auth_db()
-    try:
-        for product, report in analysis_results.items():
-            parsed = parse_analysis_report(report)
-            conn.execute('''
-                INSERT INTO analysis_report_history 
-                (username, login_time, product_name, product_summary, 
-                 recommendation_index, main_advantages, main_disadvantages, purchase_advice)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (username, login_time, product, 
-                  parsed['product_summary'], parsed['recommendation_index'],
-                  parsed['main_advantages'], parsed['main_disadvantages'], 
-                  parsed['purchase_advice']))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"保存失败: {str(e)}")
-        return False
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
@@ -386,7 +311,6 @@ def auth_gate():
                             'logged_in': True,
                             'username': login_username,
                             'user_id': user_id,
-                            'login_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             'raw_df': load_user_data(user_id, 'raw_data'),
                             'cleaned_df': load_user_data(user_id, 'cleaned_data'),
                             'predicted_df': load_user_data(user_id, 'predicted_data')
@@ -415,73 +339,6 @@ def main_interface():
     """主业务界面"""
     st.title(f"欢迎回来，{st.session_state.username}！")
     
-    # 侧边栏历史记录
-    with st.sidebar:
-        st.header("📜 历史记录")
-        history_type = st.selectbox("选择记录类型", ["预测记录", "分析报告"])
-    
-        # 获取时间选项
-        conn = get_auth_db()
-        table_name = "prediction_history" if history_type == "预测记录" else "analysis_report_history"
-        time_df = pd.read_sql_query(
-            f'''SELECT DISTINCT login_time 
-                FROM {table_name} 
-                WHERE username = ? 
-                ORDER BY login_time DESC''',
-            conn, 
-            params=(st.session_state.username,)
-        )
-        time_options = time_df['login_time'].tolist()
-    
-        # 时间选择器
-        selected_time = st.selectbox(
-            "选择时间范围",
-            options=time_options,
-            format_func=lambda x: pd.to_datetime(x).strftime('%Y-%m-%d %H:%M'),
-            key=f"time_select_{history_type}"
-        ) if time_options else st.info("暂无历史记录")
-
-        # 数据展示
-        if selected_time:
-            if history_type == "预测记录":
-                df = pd.read_sql_query(
-                    '''SELECT product_name, comment, recommendation_score 
-                    FROM prediction_history 
-                    WHERE username = ? AND login_time = ?''',
-                    conn, 
-                    params=(st.session_state.username, selected_time)
-                )
-                column_config = {
-                    "product_name": "商品名称",
-                    "comment": "评论内容",
-                    "recommendation_score": st.column_config.ProgressColumn(
-                        "推荐度", format="%d", min_value=1, max_value=10)
-                }
-            else:
-                df = pd.read_sql_query(
-                    '''SELECT product_name, product_summary, recommendation_index,
-                            main_advantages, main_disadvantages, purchase_advice 
-                    FROM analysis_report_history 
-                    WHERE username = ? AND login_time = ?''',
-                    conn,
-                    params=(st.session_state.username, selected_time)
-                )
-                column_config = {
-                    "product_name": "商品名称",
-                    "product_summary": "产品总结",
-                    "recommendation_index": "推荐指数",
-                    "main_advantages": "主要优点",
-                    "main_disadvantages": "主要缺点",
-                    "purchase_advice": "购买建议"
-                }
-        
-            st.dataframe(
-                df,
-                height=300,
-                column_config=column_config,
-                use_container_width=True
-            )
-
     # 文件上传模块
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
                                     help="支持UTF-8编码文件，最大100MB")
@@ -503,6 +360,7 @@ def main_interface():
     if st.session_state.raw_df is not None:
         with st.expander("📂 原始数据详情", expanded=False):
             st.write(f"记录数：{len(st.session_state.raw_df)}")
+            # 添加自增序号列（从1开始）
             display_raw = st.session_state.raw_df.copy()
             display_raw.insert(0, '序号', range(1, len(display_raw)+1))
             st.dataframe(
@@ -533,6 +391,7 @@ def main_interface():
         if st.session_state.cleaned_df is not None:
             with st.expander("✨ 清洗后数据详情", expanded=False):
                 st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
+                # 添加自增序号列（从1开始）
                 display_cleaned = st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']].copy()
                 display_cleaned.insert(0, '序号', range(1, len(display_cleaned)+1))
                 st.dataframe(
@@ -542,7 +401,7 @@ def main_interface():
                     column_order=["序号", '昵称','日期','地区','产品', '评分','评论']
                 )
 
-    # 预测分析模块
+    # ====================== 预测分析模块 ======================
     if st.session_state.cleaned_df is not None:
         st.divider()
         st.subheader("预测模块")
@@ -556,6 +415,7 @@ def main_interface():
         
             with st.status("🧠 正在生成预测...", expanded=True) as status:
                 try:
+                # 特征提取流程
                     status.write("1. 提取关键词...")
                     cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
                 
@@ -594,6 +454,7 @@ def main_interface():
                     st.error(f"错误详情：{str(e)}")
                     st.stop()
 
+            # 预测结果展示
             if st.session_state.predicted_df is not None:
                 st.success("预测结果：")
                 st.dataframe(
@@ -612,29 +473,20 @@ def main_interface():
                             max_value=10
                         )
                     }
-                )
-                st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
+            )
+            st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
     
-                csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ 下载预测结果",
-                    data=csv,
-                    file_name='predicted_scores.csv',
-                    mime='text/csv',
-                    key='prediction_download'
-                )
+            # 数据导出功能
+            csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ 下载预测结果",
+                data=csv,
+                file_name='predicted_scores.csv',
+                mime='text/csv',
+                key='prediction_download'
+            )
 
-                col1, col2 = st.columns([1,2])
-                with col1:
-                    if st.button("💾 保存预测记录", use_container_width=True):
-                        if save_prediction_history(
-                            st.session_state.username,
-                            st.session_state.login_time,
-                            st.session_state.predicted_df
-                        ):
-                            st.toast("预测记录保存成功！", icon="✅")
-
-    # 深度分析模块
+    # ====================== 深度分析模块 ======================
     if st.session_state.predicted_df is not None:
         st.divider()
         st.subheader("深度分析模块")
@@ -643,10 +495,12 @@ def main_interface():
             analysis_results = analyze_products(st.session_state.predicted_df)
             st.session_state.analysis_reports = analysis_results
         
+            # 报告展示组件
             for product, report in analysis_results.items():
                 with st.expander(f"​**​{product}​**​ 完整分析报告", expanded=False):
                     st.markdown(report)
 
+            # 批量导出功能
             if analysis_results:
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
@@ -663,18 +517,12 @@ def main_interface():
                     key='full_report_download'
                 )
 
-            if st.button("💾 保存分析报告", type="primary"):
-                if save_analysis_report_history(
-                    st.session_state.username,
-                    st.session_state.login_time,
-                    st.session_state.analysis_reports
-                ):
-                    st.toast("分析报告保存成功！", icon="✅")
-
 # ====================== 主程序入口 ======================
 if __name__ == "__main__":
+    # 初始化模型和数据库
     if 'model' not in st.session_state:
         try:
+            # 加载机器学习模型
             st.session_state.model = joblib.load('model.joblib')
             st.session_state.tfidf = joblib.load('tfidf_vectorizer.joblib')
             category_mappings = joblib.load('category_mappings.joblib')
@@ -683,11 +531,13 @@ if __name__ == "__main__":
         except Exception as e:
             st.error(f"初始化失败: {str(e)}")
 
+    # 初始化会话状态
     session_keys = ['logged_in', 'username', 'user_id', 'raw_df', 'cleaned_df', 'predicted_df']
     for key in session_keys:
         if key not in st.session_state:
             st.session_state[key] = None
 
+    # 页面配置
     st.set_page_config(
         page_title="电商用户购买决策AI辅助支持系统",
         layout="wide",
@@ -695,6 +545,7 @@ if __name__ == "__main__":
         initial_sidebar_state="expanded"
     )
     
+    # 流程控制
     if not st.session_state.logged_in:
         auth_gate()
     else:
