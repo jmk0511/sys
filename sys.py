@@ -17,6 +17,8 @@ import zipfile
 import sqlite3
 import bcrypt
 from pathlib import Path
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
@@ -176,11 +178,29 @@ def cleaning(df):
         df = df.reset_index(drop=True)
         progress.progress(100)
         status.update(label="✅ 清洗完成！", state="complete")
+
+        status.write("6. 生成关键词词云...")
+        df['清洗后评论'] = df['评论'].str.replace(rebate_pattern, '', regex=True)  # 移除返现关键词
+        progress.progress(90)
         return df
     except Exception as e:
         status.update(label="❌ 处理出错！", state="error")
         st.error(f"错误详情：{str(e)}")
         return df
+
+def generate_wordcloud(text_list, font_path='msyh.ttc'):
+    #"""生成中文词云"""
+    text = ' '.join(text_list)
+    wordcloud = WordCloud(
+        width=800,
+        height=400,
+        background_color='white',
+        font_path=font_path,  # 解决中文乱码
+        max_words=100,
+        collocations=False  # 避免重复词语
+    ).generate(text)
+    return wordcloud
+
 
 def build_rebate_pattern():
     patterns = []
@@ -400,6 +420,33 @@ def main_interface():
                     height=400,
                     column_order=["序号", '昵称','日期','地区','产品', '评分','评论']
                 )
+                st.subheader("评论关键词分布")
+        
+                col1, col2 = st.columns([3, 2])
+                with col1:
+                    # 生成词云
+                    comments = st.session_state.cleaned_df['评论'].tolist()
+                    try:
+                        wc = generate_wordcloud(comments)
+                        plt.figure(figsize=(10, 5))
+                        plt.imshow(wc, interpolation='bilinear')
+                        plt.axis("off")
+                        st.pyplot(plt.gcf(), clear_figure=True)  # 网页2推荐方法
+                    except Exception as e:
+                        st.error(f"词云生成失败: {str(e)}")
+        
+                with col2:
+                    # 添加交互控件（网页7建议）
+                    st.caption("🔧 显示设置")
+                    max_words = st.slider("最大显示词数", 50, 200, 100)
+                    bg_color = st.selectbox("背景颜色", ["white", "black", "grey"])
+            
+                    # 添加词频表格（网页3建议）
+                    st.caption("📊 高频词汇")
+                    word_freq = pd.Series(' '.join(comments).split()).value_counts()[:10]
+                    st.dataframe(word_freq, 
+                                column_config={"value": "出现次数"},
+                                height=300)                
 
     # ====================== 预测分析模块 ======================
     if st.session_state.cleaned_df is not None:
