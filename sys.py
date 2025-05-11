@@ -134,16 +134,20 @@ def verify_login(username, password):
         return False, "密码错误", None
 
 # ====================== 数据管理模块 ======================
-def save_user_data(user_id, df):
+def save_user_data(user_id,data_type,df):
     conn = get_auth_db()
     try:
         # 插入主记录
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO user_data 
-            (user_id, raw_data, history_id)  -- 显式包含字段
-            VALUES (?, ?, ?)  -- 新增占位符
-        ''', (user_id, df.to_json(), 0))  # 给history_id赋默认值
+            (user_id, raw_data, cleaned_data)  # 区分保存字段
+            VALUES (?, ?, ?)
+        ''', (
+            user_id,
+            df.to_json() if data_type == 'raw_data' else None,  # 根据类型填充字段
+            df.to_json() if data_type == 'cleaned_data' else None
+        ))  # 给history_id赋默认值
         
         # 获取最新data_id
         data_id = cursor.lastrowid
