@@ -53,13 +53,11 @@ def init_auth_db():
         CREATE TABLE IF NOT EXISTS prediction_records (
             record_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,            
-            record_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
             login_time DATETIME NOT NULL,
             product_name TEXT NOT NULL,
             comment TEXT NOT NULL,
             recommendation INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
             UNIQUE(user_id, product_name, comment)
         )
     ''')
@@ -69,9 +67,6 @@ def init_auth_db():
         CREATE TABLE IF NOT EXISTS analysis_reports (
             report_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,            
-            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
             login_time DATETIME NOT NULL,
             product_name TEXT NOT NULL,
             summary TEXT,
@@ -79,6 +74,7 @@ def init_auth_db():
             pros TEXT,
             cons TEXT,
             advice TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
             UNIQUE(user_id, product_name)
         )
     ''')
