@@ -45,7 +45,7 @@ def init_auth_db():
             cleaned_data BLOB,
             predicted_data BLOB,
             data_hash TEXT UNIQUE,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE  # 新增级联
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     ''')
     # 新增预测记录表
