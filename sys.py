@@ -42,6 +42,34 @@ def init_auth_db():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
+    # 新增预测记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS prediction_records (
+            record_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            login_time DATETIME NOT NULL,
+            product_name TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            recommendation INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    # 新增分析报告表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analysis_reports (
+            report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            login_time DATETIME NOT NULL,
+            product_name TEXT NOT NULL,
+            summary TEXT,
+            score INTEGER,
+            pros TEXT,
+            cons TEXT,
+            advice TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')    
     conn.commit()
     return conn
 
@@ -229,6 +257,26 @@ def calculate_scores(row):
     except:
         return pd.Series([0.5, 0.5, 0.5])
 
+def save_prediction_record(user_id, df):
+    """保存预测记录到数据库"""
+    try:
+        conn = get_auth_db()
+        current_time = datetime.now().isoformat()
+        for _, row in df.iterrows():
+            conn.execute('''
+                INSERT INTO prediction_records 
+                (user_id, login_time, product_name, comment, recommendation)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, current_time, row['产品'], row['评论'], row['系统推荐指数']))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"保存预测记录失败: {str(e)}")
+        return False
+
+
+
+
 def generate_analysis_prompt(product_name, comments, scores):
     return f"""请根据电商评论数据生成产品分析报告，要求：
 1. 产品名称：{product_name}
@@ -288,8 +336,70 @@ def analyze_products(df):
             
         duration = time.time() - start_time
         status.update(label=f"✅ 分析完成！总耗时 {duration:.2f} 秒", state="complete")
+    for product, report in analysis_results.items():
+        save_analysis_report(st.session_state.user_id, product, report)    
     
     return analysis_results
+
+def save_analysis_report(user_id, product_name, report):
+    """解析并保存分析报告到数据库"""
+    try:
+        # 解析报告内容
+        sections = {
+            'summary': re.search(r"【产品总结】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
+            'score': int(re.search(r"【推荐指数】\s*(\d+)", report).group(1)),
+            'pros': re.search(r"【主要优点】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
+            'cons': re.search(r"【主要缺点】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
+            'advice': re.search(r"【购买建议】\s*(.*)", report, re.DOTALL).group(1).strip()
+        }
+        
+        conn = get_auth_db()
+        current_time = datetime.now().isoformat()
+        conn.execute('''
+            INSERT INTO analysis_reports 
+            (user_id, login_time, product_name, summary, score, pros, cons, advice)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, current_time, product_name, 
+             sections['summary'], sections['score'],
+             sections['pros'], sections['cons'], sections['advice']))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"保存分析报告失败: {str(e)}")
+        return False
+
+def load_prediction_history(user_id, time_condition=""):
+    """加载预测记录"""
+    try:
+        conn = get_auth_db()
+        query = f'''
+            SELECT product_name, comment, recommendation, login_time 
+            FROM prediction_records
+            WHERE user_id = ? {time_condition}
+            ORDER BY login_time DESC
+        '''
+        df = pd.read_sql_query(query, conn, params=(user_id,))
+        return df
+    except Exception as e:
+        st.error(f"加载预测记录失败: {str(e)}")
+        return pd.DataFrame()
+
+def load_analysis_history(user_id, time_condition=""):
+    """加载分析报告"""
+    try:
+        conn = get_auth_db()
+        query = f'''
+            SELECT product_name, summary, score, pros, cons, advice, login_time
+            FROM analysis_reports
+            WHERE user_id = ? {time_condition}
+            ORDER BY login_time DESC
+        '''
+        df = pd.read_sql_query(query, conn, params=(user_id,))
+        return df
+    except Exception as e:
+        st.error(f"加载分析报告失败: {str(e)}")
+        return pd.DataFrame()
+
 
 # ====================== 界面控制模块 ======================
 def auth_gate():
@@ -337,6 +447,56 @@ def auth_gate():
 
 def main_interface():
     """主业务界面"""
+    with st.sidebar:
+        st.subheader("📜 历史记录中心")
+        record_type = st.selectbox("选择记录类型", 
+                                 ["预测记录", "分析报告"],
+                                 index=0)
+        
+        time_options = {
+            "全部": None,
+            "最近24小时": "1 day",
+            "最近一周": "7 days",
+            "最近一个月": "1 month"
+        }
+        selected_time = st.selectbox("时间范围", list(time_options.keys()))
+        
+        # 获取时间条件
+        time_condition = ""
+        if time_options[selected_time]:
+            time_condition = f"AND login_time >= datetime('now', '-{time_options[selected_time]}')"
+            
+        # 展示对应记录
+        if record_type == "预测记录":
+            pred_df = load_prediction_history(st.session_state.user_id, time_condition)
+            if not pred_df.empty:
+                st.dataframe(pred_df[['product_name', 'comment', 'recommendation']],
+                           column_config={
+                               "product_name": "产品名称",
+                               "comment": "用户评论",
+                               "recommendation": st.column_config.ProgressColumn(
+                                   "推荐度", format="%d", min_value=1, max_value=10)
+                           },
+                           use_container_width=True)
+            else:
+                st.info("暂无历史预测记录")
+        
+        elif record_type == "分析报告":
+            report_df = load_analysis_history(st.session_state.user_id, time_condition)
+            if not report_df.empty:
+                st.dataframe(report_df[['product_name', 'summary', 'score', 'pros', 'cons', 'advice']],
+                           column_config={
+                               "product_name": "产品名称",
+                               "summary": "总结概要",
+                               "score": "推荐指数",
+                               "pros": "主要优点",
+                               "cons": "主要缺点",
+                               "advice": "购买建议"
+                           },
+                           use_container_width=True)
+            else:
+                st.info("暂无历史分析报告")
+                    
     st.title(f"欢迎回来，{st.session_state.username}！")
     
     # 文件上传模块
@@ -385,6 +545,7 @@ def main_interface():
                 start_time = time.time()
                 cleaned_df = cleaning(st.session_state.raw_df.copy())
                 if save_user_data(st.session_state.user_id, 'cleaned_data', cleaned_df):
+                    st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]               
                     st.session_state.cleaned_df = cleaned_df
                 st.session_state.processing_time = time.time() - start_time
 
