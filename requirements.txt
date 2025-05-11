@@ -1,3 +1,4 @@
+--index-url https://pypi.tuna.tsinghua.edu.cn/simple
 streamlit>=1.37.1
 pandas>=2.2.3
 scikit-learn>=1.6.1
