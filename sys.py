@@ -14,113 +14,164 @@ import requests
 import os
 import io
 import zipfile
-import sqlite3
+import mysql.connector  # 修改为MySQL驱动
 import bcrypt
 from pathlib import Path
+from mysql.connector import Error
 
-# ====================== 用户认证模块 ======================
+# ====================== MySQL配置 ======================
 def init_auth_db():
-    """初始化数据库连接"""
-    conn = sqlite3.connect('user_auth.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    """初始化MySQL数据库连接"""
+    try:
+        conn = mysql.connector.connect(
+            host=st.secrets["mysql"]["host"],
+            user=st.secrets["mysql"]["user"],
+            password=st.secrets["mysql"]["password"],
+            database=st.secrets["mysql"]["database"],
+            autocommit=False
         )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_data (
-            data_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            raw_data BLOB,
-            cleaned_data BLOB,
-            predicted_data BLOB,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    conn.commit()
-    return conn
+        cursor = conn.cursor()
+        
+        # 创建用户表（MySQL语法）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+        
+        # 创建用户数据表（MySQL语法）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_data (
+                data_id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                raw_data LONGBLOB,
+                cleaned_data LONGBLOB,
+                predicted_data LONGBLOB,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+        
+        conn.commit()
+        return conn
+        
+    except Error as e:
+        st.error(f"数据库初始化失败: {str(e)}")
+        return None
 
 @st.cache_resource
 def get_auth_db():
-    """获取数据库连接"""
+    """获取MySQL数据库连接"""
     return init_auth_db()
 
+# ====================== 用户认证模块 ======================
 def register_user(username, password):
-    """用户注册逻辑"""
+    """用户注册逻辑（MySQL版本）"""
     conn = get_auth_db()
+    cursor = None
     try:
-        if conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone():
+        cursor = conn.cursor()
+        cursor.execute('SELECT username FROM users WHERE username = %s', (username,))
+        if cursor.fetchone():
             return False, "用户名已存在"
         
         hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        conn.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', 
-                    (username, hashed_pw.decode('utf-8')))
+        cursor.execute('''
+            INSERT INTO users (username, password_hash)
+            VALUES (%s, %s)
+        ''', (username, hashed_pw.decode('utf-8')))
+        
         conn.commit()
         return True, "注册成功"
-    except Exception as e:
+        
+    except Error as e:
+        conn.rollback()
         return False, str(e)
+    finally:
+        if cursor: cursor.close()
 
 def verify_login(username, password):
-    """用户登录验证"""
+    """用户登录验证（MySQL版本）"""
     conn = get_auth_db()
-    user = conn.execute('''
-        SELECT id, password_hash FROM users WHERE username = ?
-    ''', (username,)).fetchone()
-    
-    if not user:
-        return False, "用户不存在", None
-    
-    if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
-        return True, "登录成功", user[0]
-    else:
-        return False, "密码错误", None
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, password_hash FROM users WHERE username = %s
+        ''', (username,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return False, "用户不存在", None
+            
+        if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
+            return True, "登录成功", user[0]
+        else:
+            return False, "密码错误", None
+            
+    except Error as e:
+        return False, str(e), None
+    finally:
+        if cursor: cursor.close()
 
 # ====================== 数据管理模块 ======================
 def save_user_data(user_id, data_type, df):
-    """保存用户数据到数据库"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            buffer = io.BytesIO()
-            df.to_parquet(buffer, index=False)
-            buffer.seek(0)
-            
-            update_query = f'''
-                UPDATE user_data 
-                SET {data_type} = ?
-                WHERE user_id = ? 
-                ORDER BY data_id DESC 
-                LIMIT 1
-            '''
-            conn.execute(update_query, (buffer.read(), user_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            st.error(f"数据保存失败: {str(e)}")
-            return False
+    """保存用户数据到MySQL"""
+    conn = get_auth_db()
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+        parquet_data = buffer.getvalue()
+        
+        update_query = f'''
+            UPDATE user_data 
+            SET {data_type} = %s
+            WHERE user_id = %s 
+            ORDER BY data_id DESC 
+            LIMIT 1
+        '''
+        cursor.execute(update_query, (parquet_data, user_id))
+        conn.commit()
+        return True
+        
+    except Error as e:
+        conn.rollback()
+        st.error(f"数据保存失败: {str(e)}")
+        return False
+    finally:
+        if cursor: cursor.close()
 
 def load_user_data(user_id, data_type):
-    """从数据库加载用户数据"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            query = f'''
-                SELECT {data_type} 
-                FROM user_data 
-                WHERE user_id = ?
-                ORDER BY data_id DESC 
-                LIMIT 1
-            '''
-            result = conn.execute(query, (user_id,)).fetchone()
-            if result and result[0]:
-                return pd.read_parquet(io.BytesIO(result[0]))
-            return None
-        except Exception as e:
-            st.error(f"数据加载失败: {str(e)}")
-            return None
+    """从MySQL加载用户数据"""
+    conn = get_auth_db()
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        query = f'''
+            SELECT {data_type} 
+            FROM user_data 
+            WHERE user_id = %s
+            ORDER BY data_id DESC 
+            LIMIT 1
+        '''
+        cursor.execute(query, (user_id,))
+        result = cursor.fetchone()
+        
+        if result and result[0]:
+            return pd.read_parquet(io.BytesIO(result[0]))
+        return None
+        
+    except Error as e:
+        st.error(f"数据加载失败: {str(e)}")
+        return None
+    finally:
+        if cursor: cursor.close()
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
