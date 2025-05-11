@@ -51,8 +51,164 @@ def get_auth_db():
     """获取数据库连接"""
     return init_auth_db()
 
+# 新增认证功能实现
+def register_user(username, password):
+    """注册新用户"""
+    conn = get_auth_db()
+    try:
+        cursor = conn.cursor()
+        # 检查用户名是否存在
+        cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+        if cursor.fetchone():
+            return False, "用户名已存在"
+        
+        # 生成密码哈希
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        
+        # 插入新用户
+        cursor.execute('''
+            INSERT INTO users (username, password_hash)
+            VALUES (?, ?)
+        ''', (username, password_hash))
+        conn.commit()
+        return True, "注册成功"
+    except Exception as e:
+        conn.rollback()
+        return False, f"注册失败: {str(e)}"
+    finally:
+        conn.close()
+
+def verify_login(username, password):
+    """验证用户登录"""
+    conn = get_auth_db()
+    try:
+        cursor = conn.cursor()
+        # 获取用户信息
+        cursor.execute('''
+            SELECT id, password_hash FROM users 
+            WHERE username = ?
+        ''', (username,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return False, "用户不存在", None
+        
+        user_id, stored_hash = user
+        # 转换字节类型（SQLite存储时可能转为字符串）
+        if isinstance(stored_hash, str):
+            stored_hash = stored_hash.encode('utf-8')
+        
+        # 验证密码
+        if bcrypt.checkpw(password.encode('utf-8'), stored_hash):
+            return True, "登录成功", user_id
+        return False, "密码错误", None
+    except Exception as e:
+        return False, f"登录异常: {str(e)}", None
+    finally:
+        conn.close()
+
+# 数据持久化相关函数
+def save_user_data(user_id, data_type, df):
+    """保存用户数据到数据库"""
+    try:
+        conn = get_auth_db()
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        conn.execute(f'''
+            UPDATE user_data 
+            SET {data_type} = ?
+            WHERE user_id = ?
+            ORDER BY upload_time DESC
+            LIMIT 1
+        ''', (buffer.getvalue(), user_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"数据保存失败: {str(e)}")
+        return False
+
+def load_user_data(user_id, data_type):
+    """从数据库加载用户数据"""
+    try:
+        conn = get_auth_db()
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT {data_type} FROM user_data
+            WHERE user_id = ?
+            ORDER BY upload_time DESC
+            LIMIT 1
+        ''', (user_id,))
+        data = cursor.fetchone()
+        if data and data[0]:
+            return pd.read_parquet(io.BytesIO(data[0]))
+        return None
+    except Exception as e:
+        st.error(f"数据加载失败: {str(e)}")
+        return None
+
+def create_history_entry(user_id):
+    """创建新的历史记录条目"""
+    history_id = f"history_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    conn = get_auth_db()
+    conn.execute('''
+        INSERT INTO user_data 
+        (user_id, history_id)
+        VALUES (?, ?)
+    ''', (user_id, history_id))
+    conn.commit()
+    return history_id
+
+def get_user_history(user_id):
+    """获取用户历史记录列表"""
+    conn = get_auth_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT history_id, upload_time FROM user_data
+        WHERE user_id = ?
+        ORDER BY upload_time DESC
+    ''', (user_id,))
+    return cursor.fetchall()
+
+def load_history_data(user_id, history_id):
+    """加载指定历史记录数据"""
+    try:
+        conn = get_auth_db()
+        cursor = conn.cursor()
+        
+        # 获取原始数据
+        cursor.execute('''
+            SELECT raw_data, cleaned_data, predicted_data, analysis_report
+            FROM user_data
+            WHERE user_id = ? AND history_id = ?
+        ''', (user_id, history_id))
+        data = cursor.fetchone()
+        
+        return {
+            'raw': pd.read_parquet(io.BytesIO(data[0])) if data[0] else None,
+            'cleaned': pd.read_parquet(io.BytesIO(data[1])) if data[1] else None,
+            'predicted': pd.read_parquet(io.BytesIO(data[2])) if data[2] else None,
+            'report': data[3] if data[3] else None
+        }
+    except Exception as e:
+        st.error(f"历史记录加载失败: {str(e)}")
+        return None
+
+def delete_history(user_id, history_id):
+    """删除指定历史记录"""
+    try:
+        conn = get_auth_db()
+        conn.execute('''
+            DELETE FROM user_data
+            WHERE user_id = ? AND history_id = ?
+        ''', (user_id, history_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"删除失败: {str(e)}")
+        return False
+
 # ====================== 认证入口页面 ======================
-def auth_gate():  # 确保在main_interface之前定义
+def auth_gate():
     """认证入口页面"""
     st.title("电商决策支持系统")
     
@@ -95,11 +251,11 @@ def auth_gate():  # 确保在main_interface之前定义
                     else:
                         st.error(msg)
 
-# ====================== 修改后的主界面模块 ======================
+# ====================== 主界面模块 ====================== 
 def main_interface():
     st.title(f"欢迎回来，{st.session_state.username}！")
     
-    # 历史记录侧边栏（网页6）
+    # 历史记录侧边栏
     with st.sidebar:
         st.subheader("📜 分析历史")
         history_list = get_user_history(st.session_state.user_id)
@@ -197,9 +353,25 @@ def main_interface():
         
             with st.status("🧠 正在生成预测...", expanded=True) as status:
                 try:
-                    # ...（原有预测处理代码不变）
+                    # 特征工程
+                    tfidf_features = st.session_state.tfidf.transform(cleaned_df['评论'])
                     
-                    # 预测完成后保存完整记录
+                    # 类别特征转换
+                    region_encoded = cleaned_df['地区'].map(st.session_state.region_mapping).fillna(-1)
+                    product_encoded = cleaned_df['产品'].map(st.session_state.product_mapping).fillna(-1)
+                    
+                    # 组合特征
+                    combined_features = hstack([
+                        tfidf_features,
+                        np.array(region_encoded)[:, None],
+                        np.array(product_encoded)[:, None]
+                    ])
+                    
+                    # 进行预测
+                    predictions = st.session_state.model.predict(combined_features)
+                    cleaned_df['系统推荐指数'] = predictions
+                    
+                    # 保存预测结果
                     history_id = create_history_entry(st.session_state.user_id)
                     if save_full_process_data(
                         st.session_state.user_id,
@@ -268,6 +440,64 @@ if __name__ == "__main__":
     
     # 流程控制
     if not st.session_state.logged_in:
-        auth_gate()  # 现在auth_gate已经正确定义
+        auth_gate()
     else:
         main_interface()
+
+# 辅助函数（需要根据实际业务实现）
+def cleaning(raw_df):
+    """数据清洗函数示例"""
+    # 去除HTML标签
+    raw_df['评论'] = raw_df['评论'].apply(lambda x: re.sub(r'<[^>]+>', '', str(x)))
+    
+    # 中文分词
+    raw_df['分词结果'] = raw_df['评论'].apply(lambda x: ' '.join(jieba.cut(str(x))))
+    
+    # 拼音转换
+    raw_df['拼音'] = raw_df['产品'].apply(lambda x: ' '.join(lazy_pinyin(x, style=Style.TONE3)))
+    
+    # 情感分析
+    raw_df['情感得分'] = raw_df['评论'].apply(lambda x: SnowNLP(str(x)).sentiments)
+    
+    return raw_df
+
+def analyze_products(predicted_df):
+    """生成分析报告示例"""
+    report = io.BytesIO()
+    
+    # 生成各产品分析
+    product_analysis = predicted_df.groupby('产品').agg({
+        '系统推荐指数': ['mean', 'count']
+    }).reset_index()
+    
+    # 生成报告图表
+    with pd.ExcelWriter(report, engine='xlsxwriter') as writer:
+        product_analysis.to_excel(writer, sheet_name='产品分析', index=False)
+        
+    report.seek(0)
+    return report.getvalue()
+
+def save_full_process_data(user_id, history_id, raw_df, cleaned_df, predicted_df, report):
+    """完整流程数据保存"""
+    try:
+        conn = get_auth_db()
+        
+        # 转换数据为字节流
+        raw_bytes = raw_df.to_parquet(index=False)
+        cleaned_bytes = cleaned_df.to_parquet(index=False) 
+        predicted_bytes = predicted_df.to_parquet(index=False)
+        
+        conn.execute('''
+            UPDATE user_data SET
+                raw_data = ?,
+                cleaned_data = ?,
+                predicted_data = ?,
+                analysis_report = ?
+            WHERE history_id = ?
+        ''', (raw_bytes, cleaned_bytes, predicted_bytes, report, history_id))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"完整流程保存失败: {str(e)}")
+        return False
