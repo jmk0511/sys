@@ -20,11 +20,9 @@ from pathlib import Path
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
-    """初始化数据库连接（新增预测记录表和评论表）[6,8](@ref)"""
+    """初始化数据库连接"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
-    
-    # 用户表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,8 +31,6 @@ def init_auth_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # 主数据表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_data (
             data_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,66 +38,17 @@ def init_auth_db():
             upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
             raw_data BLOB,
             cleaned_data BLOB,
+            predicted_data BLOB,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
-    
-    # 新增预测记录表[6](@ref)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS predictions (
-            prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            prediction_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            model_version TEXT DEFAULT 'v1.2',
-            result_data BLOB,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    
-    # 新增评论关联表[8](@ref)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS comments (
-            comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prediction_id INTEGER NOT NULL,
-            content TEXT,
-            score INTEGER,
-            FOREIGN KEY(prediction_id) REFERENCES predictions(prediction_id)
-        )
-    ''')
-    
-    # 新增会话记录表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            login_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            logout_time DATETIME,
-            prediction_count INTEGER DEFAULT 0,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    
-    # 修改预测记录表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS predictions (
-            prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            prediction_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            result_data BLOB,
-            analysis_report BLOB,
-            FOREIGN KEY(session_id) REFERENCES sessions(session_id)
-        )
-    ''')    
-    
     conn.commit()
     return conn
 
 @st.cache_resource
 def get_auth_db():
-    """获取持久化数据库连接（启用WAL模式提升性能）[6,8](@ref)"""
-    conn = init_auth_db()
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    """获取数据库连接"""
+    return init_auth_db()
 
 def register_user(username, password):
     """用户注册逻辑"""
@@ -134,37 +81,27 @@ def verify_login(username, password):
         return False, "密码错误", None
 
 # ====================== 数据管理模块 ======================
-def save_user_data(user_id,data_type,df):
-    conn = get_auth_db()
-    try:
-        # 插入主记录
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO user_data 
-            (user_id, raw_data, cleaned_data)  # 区分保存字段
-            VALUES (?, ?, ?)
-        ''', (
-            user_id,
-            df.to_json() if data_type == 'raw_data' else None,  # 根据类型填充字段
-            df.to_json() if data_type == 'cleaned_data' else None
-        ))  # 给history_id赋默认值
-        
-        # 获取最新data_id
-        data_id = cursor.lastrowid
-        
-        # 批量插入评论数据
-        comments = df[['评论']].to_dict('records')
-        cursor.executemany('''
-            INSERT INTO comments (data_id, content)
-            VALUES (?, ?)
-        ''', [(data_id, c['评论']) for c in comments])
-        
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        st.error(f"数据保存失败: {str(e)}")
-        return False
+def save_user_data(user_id, data_type, df):
+    """保存用户数据到数据库"""
+    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
+        try:
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False)
+            buffer.seek(0)
+            
+            update_query = f'''
+                UPDATE user_data 
+                SET {data_type} = ?
+                WHERE user_id = ? 
+                ORDER BY data_id DESC 
+                LIMIT 1
+            '''
+            conn.execute(update_query, (buffer.read(), user_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            st.error(f"数据保存失败: {str(e)}")
+            return False
 
 def load_user_data(user_id, data_type):
     """从数据库加载用户数据"""
@@ -184,157 +121,6 @@ def load_user_data(user_id, data_type):
         except Exception as e:
             st.error(f"数据加载失败: {str(e)}")
             return None
-
-def save_prediction_data(session_id, df, analysis_reports):
-    """保存完整预测记录"""
-    conn = get_auth_db()
-    try:
-        # 保存预测结果
-        pred_buffer = io.BytesIO()
-        df.to_parquet(pred_buffer)
-        
-        # 保存分析报告
-        report_buffer = io.BytesIO()
-        with zipfile.ZipFile(report_buffer, 'w') as zip_file:
-            for product, report in analysis_reports.items():
-                zip_file.writestr(f"{product}_analysis.md", report)
-        
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO predictions 
-            (session_id, result_data, analysis_report)
-            VALUES (?, ?, ?)
-        ''', (session_id, pred_buffer.getvalue(), report_buffer.getvalue()))
-        
-        # 更新会话统计
-        cursor.execute('''
-            UPDATE sessions 
-            SET prediction_count = prediction_count + 1 
-            WHERE session_id = ?
-        ''', (session_id,))
-        
-        conn.commit()
-        return True
-    except Exception as e:
-        conn.rollback()
-        st.error(f"数据保存失败: {str(e)}")
-        return False
-
-@st.cache_data(ttl=3600)
-def load_history_data(user_id):
-    """缓存历史记录查询[7,8](@ref)"""
-    return pd.read_sql('''
-        SELECT prediction_id, prediction_time, model_version 
-        FROM predictions
-        WHERE user_id = ?
-        ORDER BY prediction_time DESC
-    ''', get_auth_db(), params=(user_id,))
-    
-
-#==========会话管理模块==============
-def create_session(user_id):
-    """创建新会话记录"""
-    conn = get_auth_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO sessions (user_id) 
-        VALUES (?)
-    ''', (user_id,))
-    session_id = cursor.lastrowid
-    conn.commit()
-    return session_id
-
-def update_session_logout(session_id):
-    """更新会话注销时间"""
-    conn = get_auth_db()
-    conn.execute('''
-        UPDATE sessions 
-        SET logout_time = CURRENT_TIMESTAMP 
-        WHERE session_id = ?
-    ''', (session_id,))
-    conn.commit()
-
-
-#===========历史记录查看===============
-def show_history_sidebar(user_id):
-    """增强版历史记录侧边栏"""
-    with st.sidebar.expander("🕒 会话历史", expanded=True):
-        sessions = pd.read_sql('''
-            SELECT session_id, login_time, logout_time, prediction_count 
-            FROM sessions 
-            WHERE user_id = ?
-            ORDER BY login_time DESC
-        ''', get_auth_db(), params=(user_id,))
-        
-        if not sessions.empty:
-            sessions["display"] = sessions.apply(
-                lambda x: f"会话#{x.session_id} | {x.login_time} | 预测次数:{x.prediction_count}",
-                axis=1
-            )
-            
-            selected = st.selectbox(
-                "选择历史会话",
-                options=sessions['display'],
-                format_func=lambda x: x.split("|")[0] + "..." 
-            )
-            selected_id = int(selected.split("#")[1].split("|")[0])
-            
-            # 加载预测记录
-            predictions = pd.read_sql('''
-                SELECT prediction_time, result_data, analysis_report
-                FROM predictions
-                WHERE session_id = ?
-            ''', get_auth_db(), params=(selected_id,))
-            
-            with st.expander("📦 会话详情"):
-                st.dataframe(predictions, use_container_width=True)
-                
-            # 添加数据恢复功能
-            if st.button("🔁 恢复此会话", key=f"restore_{selected_id}"):
-                restore_session_data(selected_id)
-        else:
-            st.info("暂无历史会话记录")
-            
-#========数据恢复功能==========
-def restore_session_data(session_id):
-    """恢复历史会话数据"""
-    conn = get_auth_db()
-    
-    # 恢复预测结果
-    pred_data = pd.read_sql('''
-        SELECT result_data 
-        FROM predictions 
-        WHERE session_id = ?
-        ORDER BY prediction_time DESC 
-        LIMIT 1
-    ''', conn, params=(session_id,)).iloc[0,0]
-    
-    # 恢复分析报告
-    report_data = pd.read_sql('''
-        SELECT analysis_report 
-        FROM predictions 
-        WHERE session_id = ?
-        ORDER BY prediction_time DESC 
-        LIMIT 1
-    ''', conn, params=(session_id,)).iloc[0,0]
-    
-    # 更新会话状态
-    st.session_state.predicted_df = pd.read_parquet(io.BytesIO(pred_data))
-    st.session_state.analysis_reports = {
-        name: report.decode('utf-8') 
-        for name, report in parse_zip_buffer(io.BytesIO(report_data))
-    }
-    st.success("历史会话数据恢复成功！")
-
-def parse_zip_buffer(buffer):
-    """解析ZIP文件内容"""
-    with zipfile.ZipFile(buffer) as zf:
-        return {
-            name: zf.read(name) 
-            for name in zf.namelist() 
-            if name.endswith('.md')
-        }
-
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
@@ -553,42 +339,6 @@ def main_interface():
     """主业务界面"""
     st.title(f"欢迎回来，{st.session_state.username}！")
     
-    # ========= 新增侧边栏历史记录 =========
-    with st.sidebar.expander("📜 历史记录", expanded=True):
-        try:
-            history = load_history_data(st.session_state.user_id)
-            
-            if not history.empty:
-                selected = st.selectbox(
-                    "选择历史记录", 
-                    options=history['prediction_id'].astype(str) + " | " + history['prediction_time'].astype(str),
-                    format_func=lambda x: f"版本 {x.split('|')[1].strip()}"
-                )
-                selected_id = int(selected.split('|')[0])
-                
-                # 加载详细数据
-                detail = pd.read_sql('''
-                    SELECT c.content, c.score 
-                    FROM predictions p
-                    JOIN comments c ON p.prediction_id = c.prediction_id
-                    WHERE p.prediction_id = ?
-                ''', get_auth_db(), params=(selected_id,))
-                
-                st.dataframe(detail, 
-                           column_config={
-                               "content": "评论内容",
-                               "score": st.column_config.ProgressColumn(
-                                   "推荐度",
-                                   min_value=1,
-                                   max_value=10
-                               )
-                           },
-                           height=200)
-            else:
-                st.info("暂无历史记录")
-        except Exception as e:
-            st.error(f"历史记录加载失败: {str(e)}")    
-    
     # 文件上传模块
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
                                     help="支持UTF-8编码文件，最大100MB")
@@ -683,12 +433,9 @@ def main_interface():
                     predicted_scores = st.session_state.model.predict(final_features)
                     cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
                 
-                    if save_prediction_data(
-                        st.session_state.current_session,
-                        cleaned_df,
-                        st.session_state.analysis_reports
-                    ):
-                        st.success("结果已保存至当前会话！")
+                    if save_user_data(st.session_state.user_id, 'predicted_data', cleaned_df[['产品', '评论', '系统推荐指数']]):
+                        st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
+                        status.update(label="✅ 预测完成！", state="complete")
                     
                 except Exception as e:
                     status.update(label="❌ 预测出错！", state="error")
