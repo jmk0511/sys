@@ -18,10 +18,9 @@ import sqlite3
 import bcrypt
 from pathlib import Path
 
-# ====================== 新增用户认证模块 ======================
+# ====================== 用户认证模块 ======================
 def init_auth_db():
-    """初始化认证数据库（关键修改点）"""
-    # 添加check_same_thread=False参数[1,6](@ref)
+    """初始化数据库连接"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -48,13 +47,42 @@ def init_auth_db():
 
 @st.cache_resource
 def get_auth_db():
-    """获取数据库连接（保持缓存机制）[7](@ref)"""
+    """获取数据库连接"""
     return init_auth_db()
 
-# ====================== 用户数据管理模块 ======================
+def register_user(username, password):
+    """用户注册逻辑"""
+    conn = get_auth_db()
+    try:
+        if conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone():
+            return False, "用户名已存在"
+        
+        hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        conn.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', 
+                    (username, hashed_pw.decode('utf-8')))
+        conn.commit()
+        return True, "注册成功"
+    except Exception as e:
+        return False, str(e)
+
+def verify_login(username, password):
+    """用户登录验证"""
+    conn = get_auth_db()
+    user = conn.execute('''
+        SELECT id, password_hash FROM users WHERE username = ?
+    ''', (username,)).fetchone()
+    
+    if not user:
+        return False, "用户不存在", None
+    
+    if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
+        return True, "登录成功", user[0]
+    else:
+        return False, "密码错误", None
+
+# ====================== 数据管理模块 ======================
 def save_user_data(user_id, data_type, df):
-    """保存数据时创建新连接（关键修改点）"""
-    # 每次操作创建新连接避免线程冲突[3,9](@ref)
+    """保存用户数据到数据库"""
     with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
         try:
             buffer = io.BytesIO()
@@ -76,8 +104,7 @@ def save_user_data(user_id, data_type, df):
             return False
 
 def load_user_data(user_id, data_type):
-    """加载数据时创建新连接"""
-    # 使用with语句确保连接正确关闭[8](@ref)
+    """从数据库加载用户数据"""
     with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
         try:
             query = f'''
@@ -95,7 +122,7 @@ def load_user_data(user_id, data_type):
             st.error(f"数据加载失败: {str(e)}")
             return None
 
-# ====================== 原有业务模块（完整保留）======================
+# ====================== 核心业务模块 ======================
 def load_rebate_keywords():
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
     file_path = 'rebate_keywords.txt'
@@ -112,7 +139,6 @@ def load_rebate_keywords():
         return default_keywords
 
 def cleaning(df):
-    # 完整保留原有清洗逻辑
     progress = st.progress(0)
     status = st.status("🚀 正在处理数据...")
     
@@ -265,48 +291,6 @@ def analyze_products(df):
     
     return analysis_results
 
-# ====================== 用户数据管理模块 ======================
-def save_user_data(user_id, data_type, df):
-    """保存用户数据到数据库"""
-    conn = get_auth_db()
-    try:
-        buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)
-        
-        update_query = f'''
-            UPDATE user_data 
-            SET {data_type} = ?
-            WHERE user_id = ? 
-            ORDER BY data_id DESC 
-            LIMIT 1
-        '''
-        conn.execute(update_query, (buffer.read(), user_id))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"数据保存失败: {str(e)}")
-        return False
-
-def load_user_data(user_id, data_type):
-    """从数据库加载用户数据"""
-    conn = get_auth_db()
-    try:
-        query = f'''
-            SELECT {data_type} 
-            FROM user_data 
-            WHERE user_id = ?
-            ORDER BY data_id DESC 
-            LIMIT 1
-        '''
-        result = conn.execute(query, (user_id,)).fetchone()
-        if result and result[0]:
-            return pd.read_parquet(io.BytesIO(result[0]))
-        return None
-    except Exception as e:
-        st.error(f"数据加载失败: {str(e)}")
-        return None
-
 # ====================== 界面控制模块 ======================
 def auth_gate():
     """认证入口页面"""
@@ -405,34 +389,35 @@ def main_interface():
                     height=400
                 )
 
-    # 预测分析模块
+    # ====================== 预测分析模块 ======================
     if st.session_state.cleaned_df is not None:
         st.divider()
         st.subheader("预测模块")
-        
+    
         if st.button("🔮 预测推荐指数", use_container_width=True):
             if 'model' not in st.session_state:
                 st.error("模型未加载，无法进行预测！")
                 return
-            
+        
             cleaned_df = st.session_state.cleaned_df.copy()
-            
+        
             with st.status("🧠 正在生成预测...", expanded=True) as status:
                 try:
+                # 特征提取流程
                     status.write("1. 提取关键词...")
                     cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
-                    
+                
                     status.write("2. 计算情感特征...")
                     scores = cleaned_df.apply(calculate_scores, axis=1)
                     cleaned_df[['情感度', '真实性', '参考度']] = scores
-                    
+                
                     status.write("3. 文本特征转换...")
                     keywords_tfidf = st.session_state.tfidf.transform(cleaned_df['关键词'])
-                    
+                
                     status.write("4. 合并特征...")
                     numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
                     features = hstack([keywords_tfidf, numeric_features])
-                    
+                
                     status.write("5. 处理分类特征...")
                     cleaned_df['地区_编码'] = pd.Categorical(
                         cleaned_df['地区'], 
@@ -443,47 +428,67 @@ def main_interface():
                         categories=st.session_state.product_mapping
                     ).codes
                     final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
-                    
+                
                     status.write("6. 进行模型预测...")
                     predicted_scores = st.session_state.model.predict(final_features)
                     cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
-                    
+                
                     if save_user_data(st.session_state.user_id, 'predicted_data', cleaned_df[['产品', '评论', '系统推荐指数']]):
                         st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
                         status.update(label="✅ 预测完成！", state="complete")
-                        
+                    
                 except Exception as e:
                     status.update(label="❌ 预测出错！", state="error")
                     st.error(f"错误详情：{str(e)}")
                     st.stop()
 
+            # 预测结果展示
             if st.session_state.predicted_df is not None:
                 st.success("预测结果：")
-                st.dataframe(st.session_state.predicted_df, use_container_width=True, height=600, hide_index=True)
-                st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
-        
-                csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ 下载预测结果",
-                    data=csv,
-                    file_name='predicted_scores.csv',
-                    mime='text/csv',
-                    key='prediction_download'
-                )
-                
-    # 深度分析模块
+                st.dataframe(
+                    st.session_state.predicted_df,
+                    use_container_width=True,
+                    height=600,
+                    hide_index=True,
+                    column_config={
+                        "产品": "商品名称",
+                        "评论": st.column_config.TextColumn(width="large"),
+                        "系统推荐指数": st.column_config.ProgressColumn(
+                            "推荐度",
+                            help="AI推荐指数(1-10)",
+                            format="%d",
+                            min_value=1,
+                            max_value=10
+                        )
+                    }
+            )
+            st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
+    
+            # 数据导出功能
+            csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ 下载预测结果",
+                data=csv,
+                file_name='predicted_scores.csv',
+                mime='text/csv',
+                key='prediction_download'
+            )
+
+    # ====================== 深度分析模块 ======================
     if st.session_state.predicted_df is not None:
         st.divider()
         st.subheader("深度分析模块")
-        
+    
         if st.button("📊 生成产品分析报告", type="primary"):
             analysis_results = analyze_products(st.session_state.predicted_df)
             st.session_state.analysis_reports = analysis_results
-            
+        
+            # 报告展示组件
             for product, report in analysis_results.items():
                 with st.expander(f"​**​{product}​**​ 完整分析报告", expanded=False):
                     st.markdown(report)
 
+            # 批量导出功能
             if analysis_results:
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
@@ -491,7 +496,7 @@ def main_interface():
                         safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
                         zip_file.writestr(f"{safe_name}_分析.txt", report)
                 zip_buffer.seek(0)
-                
+            
                 st.download_button(
                     label="⬇️ 下载全部分析报告",
                     data=zip_buffer,
@@ -505,6 +510,7 @@ if __name__ == "__main__":
     # 初始化模型和数据库
     if 'model' not in st.session_state:
         try:
+            # 加载机器学习模型
             st.session_state.model = joblib.load('model.joblib')
             st.session_state.tfidf = joblib.load('tfidf_vectorizer.joblib')
             category_mappings = joblib.load('category_mappings.joblib')
@@ -520,7 +526,12 @@ if __name__ == "__main__":
             st.session_state[key] = None
 
     # 页面配置
-    st.set_page_config(page_title="电商用户购买决策AI辅助支持系统", layout="wide")
+    st.set_page_config(
+        page_title="电商用户购买决策AI辅助支持系统",
+        layout="wide",
+        page_icon="🛒",
+        initial_sidebar_state="expanded"
+    )
     
     # 流程控制
     if not st.session_state.logged_in:
