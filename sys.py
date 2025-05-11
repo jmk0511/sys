@@ -344,14 +344,29 @@ def analyze_products(df):
 def save_analysis_report(user_id, product_name, report):
     """解析并保存分析报告到数据库"""
     try:
-        # 解析报告内容
-        sections = {
-            'summary': re.search(r"【产品总结】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
-            'score': int(re.search(r"【推荐指数】\s*(\d+)", report).group(1)),
-            'pros': re.search(r"【主要优点】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
-            'cons': re.search(r"【主要缺点】\s*(.*?)\s*【", report, re.DOTALL).group(1).strip(),
-            'advice': re.search(r"【购买建议】\s*(.*)", report, re.DOTALL).group(1).strip()
-        }
+        # 使用try-except包裹解析过程（参考网页6）
+        try:
+            # 添加匹配结果检查（关键修复点，参考网页1、7）
+            summary_match = re.search(r"【产品总结】\s*(.*?)\s*【", report, re.DOTALL)
+            score_match = re.search(r"【推荐指数】\s*(\d+)", report)
+            pros_match = re.search(r"【主要优点】\s*(.*?)\s*【", report, re.DOTALL)
+            cons_match = re.search(r"【主要缺点】\s*(.*?)\s*【", report, re.DOTALL)
+            advice_match = re.search(r"【购买建议】\s*(.*)", report, re.DOTALL)
+            
+            # 验证所有匹配项（参考网页3的解决方案）
+            if not all([summary_match, score_match, pros_match, cons_match, advice_match]):
+                raise ValueError(f"分析报告格式异常，产品：{product_name}")
+            
+            sections = {
+                'summary': summary_match.group(1).strip(),
+                'score': int(score_match.group(1)),
+                'pros': pros_match.group(1).strip(),
+                'cons': cons_match.group(1).strip(),
+                'advice': advice_match.group(1).strip()
+            }
+        except (AttributeError, ValueError) as parse_error:
+            st.error(f"报告解析失败：{str(parse_error)}，原始报告内容：\n{report[:200]}...")
+            return False
         
         conn = get_auth_db()
         current_time = datetime.now().isoformat()
