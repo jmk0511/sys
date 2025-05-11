@@ -146,16 +146,17 @@ def load_user_data(user_id, data_type):
             return None
 
 def save_prediction_history(username, login_time, predicted_df):
-    """保存预测记录到数据库"""
     conn = get_auth_db()
     try:
-        for _, row in predicted_df.iterrows():
-            conn.execute('''
-                INSERT INTO prediction_history 
-                (username, login_time, product_name, comment, recommendation_score)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (username, login_time, row['产品'], row['评论'], row['系统推荐指数']))
-        conn.commit()
+        with conn:  # 使用事务处理
+            for _, row in predicted_df.iterrows():
+                conn.execute(...)
+        # 强制刷新缓存和状态
+        st.cache_data.clear()
+        st.session_state.predicted_df = None
+        st.toast("数据已保存，正在刷新历史记录...", icon="✅")
+        time.sleep(0.5)
+        st.rerun()  # 触发页面刷新
         return True
     except Exception as e:
         st.error(f"保存失败: {str(e)}")
@@ -418,29 +419,68 @@ def main_interface():
     with st.sidebar:
         st.header("📜 历史记录")
         history_type = st.selectbox("选择记录类型", ["预测记录", "分析报告"])
-        
+    
+        # 获取时间选项
         conn = get_auth_db()
-        if history_type == "预测记录":
-            df = pd.read_sql_query(
-                '''SELECT login_time, product_name, comment, recommendation_score 
-                   FROM prediction_history 
-                   WHERE username = ? 
-                   ORDER BY login_time DESC''',
-                conn, 
-                params=(st.session_state.username,)
+        table_name = "prediction_history" if history_type == "预测记录" else "analysis_report_history"
+        time_df = pd.read_sql_query(
+            f'''SELECT DISTINCT login_time 
+                FROM {table_name} 
+                WHERE username = ? 
+                ORDER BY login_time DESC''',
+            conn, 
+            params=(st.session_state.username,)
+        )
+        time_options = time_df['login_time'].tolist()
+    
+        # 时间选择器
+        selected_time = st.selectbox(
+            "选择时间范围",
+            options=time_options,
+            format_func=lambda x: pd.to_datetime(x).strftime('%Y-%m-%d %H:%M'),
+            key=f"time_select_{history_type}"
+        ) if time_options else st.info("暂无历史记录")
+
+        # 数据展示
+        if selected_time:
+            if history_type == "预测记录":
+                df = pd.read_sql_query(
+                    '''SELECT product_name, comment, recommendation_score 
+                    FROM prediction_history 
+                    WHERE username = ? AND login_time = ?''',
+                    conn, 
+                    params=(st.session_state.username, selected_time)
+                )
+                column_config = {
+                    "product_name": "商品名称",
+                    "comment": "评论内容",
+                    "recommendation_score": st.column_config.ProgressColumn(
+                        "推荐度", format="%d", min_value=1, max_value=10)
+                }
+            else:
+                df = pd.read_sql_query(
+                    '''SELECT product_name, product_summary, recommendation_index,
+                            main_advantages, main_disadvantages, purchase_advice 
+                    FROM analysis_report_history 
+                    WHERE username = ? AND login_time = ?''',
+                    conn,
+                    params=(st.session_state.username, selected_time)
+                )
+                column_config = {
+                    "product_name": "商品名称",
+                    "product_summary": "产品总结",
+                    "recommendation_index": "推荐指数",
+                    "main_advantages": "主要优点",
+                    "main_disadvantages": "主要缺点",
+                    "purchase_advice": "购买建议"
+                }
+        
+            st.dataframe(
+                df,
+                height=300,
+                column_config=column_config,
+                use_container_width=True
             )
-            st.dataframe(df, use_container_width=True, height=400)
-        else:
-            df = pd.read_sql_query(
-                '''SELECT login_time, product_name, recommendation_index,
-                          product_summary, purchase_advice 
-                   FROM analysis_report_history 
-                   WHERE username = ? 
-                   ORDER BY login_time DESC''',
-                conn,
-                params=(st.session_state.username,)
-            )
-            st.dataframe(df, use_container_width=True, height=400)
 
     # 文件上传模块
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
