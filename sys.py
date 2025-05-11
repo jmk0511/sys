@@ -37,6 +37,7 @@ def init_auth_db():
         )
     ''')
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_data (
             data_id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -44,7 +45,7 @@ def init_auth_db():
             cleaned_data BLOB,
             predicted_data BLOB,
             data_hash TEXT UNIQUE,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE  # 新增级联
         )
     ''')
     # 新增预测记录表
