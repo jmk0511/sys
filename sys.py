@@ -360,7 +360,15 @@ def main_interface():
     if st.session_state.raw_df is not None:
         with st.expander("📂 原始数据详情", expanded=False):
             st.write(f"记录数：{len(st.session_state.raw_df)}")
-            st.dataframe(st.session_state.raw_df, use_container_width=True, height=300)
+            # 添加自增序号列（从1开始）
+            display_raw = st.session_state.raw_df.copy()
+            display_raw.insert(0, '序号', range(1, len(display_raw)+1))
+            st.dataframe(
+                display_raw,
+                use_container_width=True,
+                height=300,
+                column_order=["序号"] + [col for col in display_raw.columns if col != "序号"]
+            )
             if st.button("🗑️ 清除当前数据"):
                 st.session_state.raw_df = None
                 st.session_state.cleaned_df = None
@@ -383,10 +391,14 @@ def main_interface():
         if st.session_state.cleaned_df is not None:
             with st.expander("✨ 清洗后数据详情", expanded=False):
                 st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
+                # 添加自增序号列（从1开始）
+                display_cleaned = st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']].copy()
+                display_cleaned.insert(0, '序号', range(1, len(display_cleaned)+1))
                 st.dataframe(
-                    st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
+                    display_cleaned,
                     use_container_width=True,
-                    height=400
+                    height=400,
+                    column_order=["序号", '昵称','日期','地区','产品', '评分','评论']
                 )
 
     # ====================== 预测分析模块 ======================
