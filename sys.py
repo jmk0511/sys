@@ -80,47 +80,6 @@ def verify_login(username, password):
     else:
         return False, "密码错误", None
 
-# ====================== 数据管理模块 ======================
-def save_user_data(user_id, data_type, df):
-    """保存用户数据到数据库"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            buffer = io.BytesIO()
-            df.to_parquet(buffer, index=False)
-            buffer.seek(0)
-            
-            update_query = f'''
-                UPDATE user_data 
-                SET {data_type} = ?
-                WHERE user_id = ? 
-                ORDER BY data_id DESC 
-                LIMIT 1
-            '''
-            conn.execute(update_query, (buffer.read(), user_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            st.error(f"数据保存失败: {str(e)}")
-            return False
-
-def load_user_data(user_id, data_type):
-    """从数据库加载用户数据"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            query = f'''
-                SELECT {data_type} 
-                FROM user_data 
-                WHERE user_id = ?
-                ORDER BY data_id DESC 
-                LIMIT 1
-            '''
-            result = conn.execute(query, (user_id,)).fetchone()
-            if result and result[0]:
-                return pd.read_parquet(io.BytesIO(result[0]))
-            return None
-        except Exception as e:
-            st.error(f"数据加载失败: {str(e)}")
-            return None
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
