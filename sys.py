@@ -1,8 +1,3 @@
-import time  
-import streamlit as st
-import pandas as pd
-import re
-import jieba
 import numpy as np
 from pypinyin import lazy_pinyin, Style
 from datetime import datetime
@@ -19,7 +14,7 @@ import bcrypt
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
-    """初始化数据库连接"""
+    """初始化数据库连接（网页1/网页4/网页5最佳实践）"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
@@ -46,26 +41,28 @@ def init_auth_db():
     conn.commit()
     return conn
 
-@st.cache_resource
+# 移除@st.cache_resource装饰器（网页9/网页10线程安全建议）
 def get_auth_db():
-    """获取数据库连接"""
-    return init_auth_db()
+    """获取新数据库连接（每次调用新建连接）"""
+    return sqlite3.connect('user_auth.db', check_same_thread=False)
 
-# 用户认证功能实现（必须先于auth_gate定义）
+# ====================== 用户认证功能实现 ======================
 def register_user(username, password):
-    """注册新用户"""
-    conn = get_auth_db()
+    """注册新用户（网页6事务管理最佳实践）"""
+    conn = None
     try:
+        conn = get_auth_db()
         cursor = conn.cursor()
-        # 检查用户名是否存在
+        
+        # 检查用户名是否存在（网页5参数化查询）
         cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
         if cursor.fetchone():
             return False, "用户名已存在"
         
-        # 生成密码哈希
+        # 生成密码哈希（网页3安全实践）
         password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
         
-        # 插入新用户
+        # 插入新用户（网页8事务处理）
         cursor.execute('''
             INSERT INTO users (username, password_hash)
             VALUES (?, ?)
@@ -73,17 +70,20 @@ def register_user(username, password):
         conn.commit()
         return True, "注册成功"
     except Exception as e:
-        conn.rollback()
+        if conn: conn.rollback()
         return False, f"注册失败: {str(e)}"
     finally:
-        conn.close()
+        # 显式关闭连接（网页2/网页7关键修复）
+        if 'cursor' in locals(): cursor.close()
+        if conn: conn.close()
 
 def verify_login(username, password):
-    """验证用户登录"""
-    conn = get_auth_db()
+    """验证用户登录（网页4连接管理优化）"""
+    conn = None
     try:
+        conn = get_auth_db()
         cursor = conn.cursor()
-        # 获取用户信息
+        
         cursor.execute('''
             SELECT id, password_hash FROM users 
             WHERE username = ?
@@ -94,118 +94,41 @@ def verify_login(username, password):
             return False, "用户不存在", None
         
         user_id, stored_hash = user
-        # 转换字节类型（SQLite存储时可能转为字符串）
         if isinstance(stored_hash, str):
             stored_hash = stored_hash.encode('utf-8')
         
-        # 验证密码
         if bcrypt.checkpw(password.encode('utf-8'), stored_hash):
             return True, "登录成功", user_id
         return False, "密码错误", None
     except Exception as e:
         return False, f"登录异常: {str(e)}", None
     finally:
-        conn.close()
+        if 'cursor' in locals(): cursor.close()
+        if conn: conn.close()
 
-# 数据持久化相关函数
+# ====================== 数据持久化模块 ======================
 def save_user_data(user_id, data_type, df):
-    """保存用户数据到数据库"""
+    """保存用户数据（网页5事务优化）"""
+    conn = None
     try:
         conn = get_auth_db()
         buffer = io.BytesIO()
         df.to_parquet(buffer, index=False)
-        conn.execute(f'''
-            UPDATE user_data 
-            SET {data_type} = ?
-            WHERE user_id = ?
-            ORDER BY upload_time DESC
-            LIMIT 1
-        ''', (buffer.getvalue(), user_id))
-        conn.commit()
+        
+        with conn:  # 自动提交事务（网页6）
+            conn.execute(f'''
+                UPDATE user_data 
+                SET {data_type} = ?
+                WHERE user_id = ?
+                ORDER BY upload_time DESC
+                LIMIT 1
+            ''', (buffer.getvalue(), user_id))
         return True
     except Exception as e:
         st.error(f"数据保存失败: {str(e)}")
         return False
-
-def load_user_data(user_id, data_type):
-    """从数据库加载用户数据"""
-    try:
-        conn = get_auth_db()
-        cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT {data_type} FROM user_data
-            WHERE user_id = ?
-            ORDER BY upload_time DESC
-            LIMIT 1
-        ''', (user_id,))
-        data = cursor.fetchone()
-        if data and data[0]:
-            return pd.read_parquet(io.BytesIO(data[0]))
-        return None
-    except Exception as e:
-        st.error(f"数据加载失败: {str(e)}")
-        return None
-
-def create_history_entry(user_id):
-    """创建新的历史记录条目"""
-    history_id = f"history_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    conn = get_auth_db()
-    conn.execute('''
-        INSERT INTO user_data 
-        (user_id, history_id)
-        VALUES (?, ?)
-    ''', (user_id, history_id))
-    conn.commit()
-    return history_id
-
-def get_user_history(user_id):
-    """获取用户历史记录列表"""
-    conn = get_auth_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT history_id, upload_time FROM user_data
-        WHERE user_id = ?
-        ORDER BY upload_time DESC
-    ''', (user_id,))
-    return cursor.fetchall()
-
-def load_history_data(user_id, history_id):
-    """加载指定历史记录数据"""
-    try:
-        conn = get_auth_db()
-        cursor = conn.cursor()
-        
-        # 获取原始数据
-        cursor.execute('''
-            SELECT raw_data, cleaned_data, predicted_data, analysis_report
-            FROM user_data
-            WHERE user_id = ? AND history_id = ?
-        ''', (user_id, history_id))
-        data = cursor.fetchone()
-        
-        return {
-            'raw': pd.read_parquet(io.BytesIO(data[0])) if data[0] else None,
-            'cleaned': pd.read_parquet(io.BytesIO(data[1])) if data[1] else None,
-            'predicted': pd.read_parquet(io.BytesIO(data[2])) if data[2] else None,
-            'report': data[3] if data[3] else None
-        }
-    except Exception as e:
-        st.error(f"历史记录加载失败: {str(e)}")
-        return None
-
-def delete_history(user_id, history_id):
-    """删除指定历史记录"""
-    try:
-        conn = get_auth_db()
-        conn.execute('''
-            DELETE FROM user_data
-            WHERE user_id = ? AND history_id = ?
-        ''', (user_id, history_id))
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"删除失败: {str(e)}")
-        return False
+    finally:
+        if conn: conn.close()
 
 # ====================== 认证入口页面 ======================
 def auth_gate():
@@ -443,61 +366,3 @@ if __name__ == "__main__":
         auth_gate()
     else:
         main_interface()
-
-# 辅助函数（需要根据实际业务实现）
-def cleaning(raw_df):
-    """数据清洗函数示例"""
-    # 去除HTML标签
-    raw_df['评论'] = raw_df['评论'].apply(lambda x: re.sub(r'<[^>]+>', '', str(x)))
-    
-    # 中文分词
-    raw_df['分词结果'] = raw_df['评论'].apply(lambda x: ' '.join(jieba.cut(str(x))))
-    
-    # 拼音转换
-    raw_df['拼音'] = raw_df['产品'].apply(lambda x: ' '.join(lazy_pinyin(x, style=Style.TONE3)))
-    
-    # 情感分析
-    raw_df['情感得分'] = raw_df['评论'].apply(lambda x: SnowNLP(str(x)).sentiments)
-    
-    return raw_df
-
-def analyze_products(predicted_df):
-    """生成分析报告示例"""
-    report = io.BytesIO()
-    
-    # 生成各产品分析
-    product_analysis = predicted_df.groupby('产品').agg({
-        '系统推荐指数': ['mean', 'count']
-    }).reset_index()
-    
-    # 生成报告图表
-    with pd.ExcelWriter(report, engine='xlsxwriter') as writer:
-        product_analysis.to_excel(writer, sheet_name='产品分析', index=False)
-        
-    report.seek(0)
-    return report.getvalue()
-
-def save_full_process_data(user_id, history_id, raw_df, cleaned_df, predicted_df, report):
-    """完整流程数据保存"""
-    try:
-        conn = get_auth_db()
-        
-        # 转换数据为字节流
-        raw_bytes = raw_df.to_parquet(index=False)
-        cleaned_bytes = cleaned_df.to_parquet(index=False) 
-        predicted_bytes = predicted_df.to_parquet(index=False)
-        
-        conn.execute('''
-            UPDATE user_data SET
-                raw_data = ?,
-                cleaned_data = ?,
-                predicted_data = ?,
-                analysis_report = ?
-            WHERE history_id = ?
-        ''', (raw_bytes, cleaned_bytes, predicted_bytes, report, history_id))
-        
-        conn.commit()
-        return True
-    except Exception as e:
-        st.error(f"完整流程保存失败: {str(e)}")
-        return False
