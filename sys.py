@@ -17,7 +17,7 @@ import zipfile
 import sqlite3
 import bcrypt
 from pathlib import Path
-wordcloud
+
 # ====================== 用户认证模块 ======================
 def init_auth_db():
     """初始化数据库连接"""
