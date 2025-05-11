@@ -360,15 +360,14 @@ def main_interface():
     if st.session_state.raw_df is not None:
         with st.expander("📂 原始数据详情", expanded=False):
             st.write(f"记录数：{len(st.session_state.raw_df)}")
-            # 创建带序号的显示副本（网页1方法）
+            # 添加自增序号列（从1开始）
             display_raw = st.session_state.raw_df.copy()
-            display_raw.insert(0, '序号', range(1, len(display_raw)+1))  # 插入自增列
-        
+            display_raw.insert(0, '序号', range(1, len(display_raw)+1))
             st.dataframe(
                 display_raw,
                 use_container_width=True,
                 height=300,
-                column_order=["序号"] + [col for col in display_raw.columns if col != "序号"]  # 保持序号首列（网页4方法）
+                column_order=["序号"] + [col for col in display_raw.columns if col != "序号"]
             )
             if st.button("🗑️ 清除当前数据"):
                 st.session_state.raw_df = None
@@ -377,19 +376,30 @@ def main_interface():
                 st.rerun()
 
     # 数据清洗模块
-    if st.session_state.cleaned_df is not None:
-        with st.expander("✨ 清洗后数据详情", expanded=False):
-            st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
-            # 创建带序号的显示副本（网页6方法）
-            display_cleaned = st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']].copy()
-            display_cleaned.insert(0, '序号', range(1, len(display_cleaned)+1))  # 插入自增列
+    if st.session_state.raw_df is not None:
+        st.divider()
+        st.subheader("数据清洗模块")
         
-            st.dataframe(
-                display_cleaned,
-                use_container_width=True,
-                height=400,
-                column_order=["序号", '昵称','日期','地区','产品', '评分','评论']  # 保持序号首列（网页3方法）
-            )
+        if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
+            with st.spinner('正在处理数据...'):
+                start_time = time.time()
+                cleaned_df = cleaning(st.session_state.raw_df.copy())
+                if save_user_data(st.session_state.user_id, 'cleaned_data', cleaned_df):
+                    st.session_state.cleaned_df = cleaned_df
+                st.session_state.processing_time = time.time() - start_time
+
+        if st.session_state.cleaned_df is not None:
+            with st.expander("✨ 清洗后数据详情", expanded=False):
+                st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
+                # 添加自增序号列（从1开始）
+                display_cleaned = st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']].copy()
+                display_cleaned.insert(0, '序号', range(1, len(display_cleaned)+1))
+                st.dataframe(
+                    display_cleaned,
+                    use_container_width=True,
+                    height=400,
+                    column_order=["序号", '昵称','日期','地区','产品', '评分','评论']
+                )
 
     # ====================== 预测分析模块 ======================
     if st.session_state.cleaned_df is not None:
