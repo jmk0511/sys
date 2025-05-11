@@ -526,9 +526,9 @@ def auth_gate():
 
 def admin_panel():
     """管理员控制面板"""
-    st.sidebar.subheader("🔧 管理员工具")
+    st.sidebar.subheader(" 管理员工具")
     
-    with st.expander("🚨 用户管理", expanded=True):
+    with st.expander(" 用户管理", expanded=True):
         # 获取所有用户列表（网页5方案）
         conn = get_auth_db()
         users = conn.execute('SELECT id, username FROM users').fetchall()
@@ -539,7 +539,7 @@ def admin_panel():
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("❌ 删除用户所有数据", help="将级联删除该用户全部记录"):
+            if st.button(" 删除用户所有数据", help="将级联删除该用户全部记录"):
                 try:
                     conn.execute('DELETE FROM users WHERE id=?', (user_id_to_delete,))
                     conn.execute('DELETE FROM user_data WHERE user_id=?', (user_id_to_delete,))
@@ -551,19 +551,19 @@ def admin_panel():
                     st.error(f"删除失败: {str(e)}")
         
         with col2:
-            if st.button("🗑️ 清除用户最新数据", help="仅删除最近上传的数据"):
+            if st.button("🗑️ 清除用户一个月前数据", 
+                    help="删除该用户30天前的历史数据",
+                    type="secondary"):
                 try:
-                    # 获取最新数据ID（网页6方案）
-                    latest_data = conn.execute('''
-                        SELECT data_id FROM user_data 
-                        WHERE user_id=?
-                        ORDER BY data_id DESC LIMIT 1
-                    ''', (user_id_to_delete,)).fetchone()
-                    
-                    if latest_data:
-                        conn.execute('DELETE FROM user_data WHERE data_id=?', (latest_data[0],))
-                        conn.commit()
-                        st.success(f"已删除用户{selected_user}最新数据")
+                    # 执行按月删除操作（基于网页6、7、8的时间处理方案）
+                    deleted_count = conn.execute('''
+                        DELETE FROM user_data 
+                        WHERE user_id=? 
+                        AND upload_time < datetime('now', '-1 month')
+                    ''', (user_id_to_delete,)).rowcount
+            
+                    conn.commit()
+                    st.success(f"已清除{deleted_count}条一个月前数据")
                 except Exception as e:
                     st.error(f"删除失败: {str(e)}")
 
