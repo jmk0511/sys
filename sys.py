@@ -69,6 +69,30 @@ def init_auth_db():
         )
     ''')
     
+    # 新增会话记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            login_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            logout_time DATETIME,
+            prediction_count INTEGER DEFAULT 0,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    # 修改预测记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS predictions (
+            prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            prediction_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            result_data BLOB,
+            analysis_report BLOB,
+            FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+        )
+    ''')    
+    
     conn.commit()
     return conn
 
@@ -157,37 +181,39 @@ def load_user_data(user_id, data_type):
             st.error(f"数据加载失败: {str(e)}")
             return None
 
-def save_prediction_data(user_id, df):
-    """保存完整预测记录（新增关联存储）[6,8](@ref)"""
+def save_prediction_data(session_id, df, analysis_reports):
+    """保存完整预测记录"""
     conn = get_auth_db()
     try:
-        # 序列化预测结果
-        buffer = io.BytesIO()
-        df.to_parquet(buffer, index=False)
-        buffer.seek(0)
+        # 保存预测结果
+        pred_buffer = io.BytesIO()
+        df.to_parquet(pred_buffer)
         
-        # 插入预测记录
+        # 保存分析报告
+        report_buffer = io.BytesIO()
+        with zipfile.ZipFile(report_buffer, 'w') as zip_file:
+            for product, report in analysis_reports.items():
+                zip_file.writestr(f"{product}_analysis.md", report)
+        
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO predictions (user_id, result_data)
-            VALUES (?, ?)
-        ''', (user_id, buffer.getvalue()))
-        
-        # 获取最新预测ID
-        prediction_id = cursor.lastrowid
-        
-        # 插入评论数据
-        comments = df[['评论', '系统推荐指数']].to_dict('records')
-        cursor.executemany('''
-            INSERT INTO comments (prediction_id, content, score)
+            INSERT INTO predictions 
+            (session_id, result_data, analysis_report)
             VALUES (?, ?, ?)
-        ''', [(prediction_id, c['评论'], c['系统推荐指数']) for c in comments])
+        ''', (session_id, pred_buffer.getvalue(), report_buffer.getvalue()))
+        
+        # 更新会话统计
+        cursor.execute('''
+            UPDATE sessions 
+            SET prediction_count = prediction_count + 1 
+            WHERE session_id = ?
+        ''', (session_id,))
         
         conn.commit()
         return True
     except Exception as e:
         conn.rollback()
-        st.error(f"预测数据保存失败: {str(e)}")
+        st.error(f"数据保存失败: {str(e)}")
         return False
 
 @st.cache_data(ttl=3600)
@@ -199,33 +225,112 @@ def load_history_data(user_id):
         WHERE user_id = ?
         ORDER BY prediction_time DESC
     ''', get_auth_db(), params=(user_id,))
+    
 
-#-------------历史记录查看-----------
-def show_history(user_id):
+#==========会话管理模块==============
+def create_session(user_id):
+    """创建新会话记录"""
     conn = get_auth_db()
-    try:
-        # 获取用户所有预测记录
-        history = pd.read_sql('''
-            SELECT prediction_id, prediction_time, model_version 
-            FROM predictions
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO sessions (user_id) 
+        VALUES (?)
+    ''', (user_id,))
+    session_id = cursor.lastrowid
+    conn.commit()
+    return session_id
+
+def update_session_logout(session_id):
+    """更新会话注销时间"""
+    conn = get_auth_db()
+    conn.execute('''
+        UPDATE sessions 
+        SET logout_time = CURRENT_TIMESTAMP 
+        WHERE session_id = ?
+    ''', (session_id,))
+    conn.commit()
+
+
+#===========历史记录查看===============
+def show_history_sidebar(user_id):
+    """增强版历史记录侧边栏"""
+    with st.sidebar.expander("🕒 会话历史", expanded=True):
+        sessions = pd.read_sql('''
+            SELECT session_id, login_time, logout_time, prediction_count 
+            FROM sessions 
             WHERE user_id = ?
-            ORDER BY prediction_time DESC
-        ''', conn, params=(user_id,))
+            ORDER BY login_time DESC
+        ''', get_auth_db(), params=(user_id,))
         
-        # 显示历史记录
-        selected = st.selectbox("选择历史记录", history['prediction_id'])
-        
-        # 加载详细数据
-        detail = pd.read_sql('''
-            SELECT c.content, p.result_data->>'系统推荐指数' as score
-            FROM predictions p
-            JOIN comments c ON p.data_id = c.data_id
-            WHERE p.prediction_id = ?
-        ''', conn, params=(selected,))
-        
-        st.dataframe(detail)
-    except Exception as e:
-        st.error(f"历史记录加载失败: {str(e)}")
+        if not sessions.empty:
+            sessions["display"] = sessions.apply(
+                lambda x: f"会话#{x.session_id} | {x.login_time} | 预测次数:{x.prediction_count}",
+                axis=1
+            )
+            
+            selected = st.selectbox(
+                "选择历史会话",
+                options=sessions['display'],
+                format_func=lambda x: x.split("|")[0] + "..." 
+            )
+            selected_id = int(selected.split("#")[1].split("|")[0])
+            
+            # 加载预测记录
+            predictions = pd.read_sql('''
+                SELECT prediction_time, result_data, analysis_report
+                FROM predictions
+                WHERE session_id = ?
+            ''', get_auth_db(), params=(selected_id,))
+            
+            with st.expander("📦 会话详情"):
+                st.dataframe(predictions, use_container_width=True)
+                
+            # 添加数据恢复功能
+            if st.button("🔁 恢复此会话", key=f"restore_{selected_id}"):
+                restore_session_data(selected_id)
+        else:
+            st.info("暂无历史会话记录")
+            
+#========数据恢复功能==========
+def restore_session_data(session_id):
+    """恢复历史会话数据"""
+    conn = get_auth_db()
+    
+    # 恢复预测结果
+    pred_data = pd.read_sql('''
+        SELECT result_data 
+        FROM predictions 
+        WHERE session_id = ?
+        ORDER BY prediction_time DESC 
+        LIMIT 1
+    ''', conn, params=(session_id,)).iloc[0,0]
+    
+    # 恢复分析报告
+    report_data = pd.read_sql('''
+        SELECT analysis_report 
+        FROM predictions 
+        WHERE session_id = ?
+        ORDER BY prediction_time DESC 
+        LIMIT 1
+    ''', conn, params=(session_id,)).iloc[0,0]
+    
+    # 更新会话状态
+    st.session_state.predicted_df = pd.read_parquet(io.BytesIO(pred_data))
+    st.session_state.analysis_reports = {
+        name: report.decode('utf-8') 
+        for name, report in parse_zip_buffer(io.BytesIO(report_data))
+    }
+    st.success("历史会话数据恢复成功！")
+
+def parse_zip_buffer(buffer):
+    """解析ZIP文件内容"""
+    with zipfile.ZipFile(buffer) as zf:
+        return {
+            name: zf.read(name) 
+            for name in zf.namelist() 
+            if name.endswith('.md')
+        }
+
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
@@ -574,8 +679,12 @@ def main_interface():
                     predicted_scores = st.session_state.model.predict(final_features)
                     cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
                 
-                    if save_prediction_data(st.session_state.user_id, cleaned_df):
-                        st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
+                    if save_prediction_data(
+                        st.session_state.current_session,
+                        cleaned_df,
+                        st.session_state.analysis_reports
+                    ):
+                        st.success("结果已保存至当前会话！")
                     
                 except Exception as e:
                     status.update(label="❌ 预测出错！", state="error")
