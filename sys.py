@@ -17,6 +17,7 @@ import zipfile
 import sqlite3
 import bcrypt
 from pathlib import Path
+import hashlib
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
@@ -39,6 +40,7 @@ def init_auth_db():
             raw_data BLOB,
             cleaned_data BLOB,
             predicted_data BLOB,
+            data_hash TEXT UNIQUE,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
@@ -51,7 +53,7 @@ def init_auth_db():
             product_name TEXT NOT NULL,
             comment TEXT NOT NULL,
             recommendation INTEGER NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            UNIQUE(user_id, product_name, comment)
         )
     ''')
     
@@ -67,11 +69,46 @@ def init_auth_db():
             pros TEXT,
             cons TEXT,
             advice TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            UNIQUE(user_id, product_name)
         )
     ''')    
     conn.commit()
     return conn
+
+def generate_data_hash(data):
+    """生成数据指纹"""
+    return hashlib.md5(data).hexdigest()
+
+def save_user_data(user_id, data_type, df):
+    """带哈希校验的保存逻辑（网页5方案）"""
+    with sqlite3.connect('user_auth.db') as conn:
+        try:
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False)
+            raw_data = buffer.getvalue()
+            data_hash = generate_data_hash(raw_data)
+            
+            # 检查是否存在相同哈希
+            existing = conn.execute(
+                'SELECT data_id FROM user_data WHERE data_hash=? AND user_id=?',
+                (data_hash, user_id)
+            ).fetchone()
+            
+            if existing:
+                return False  # 存在重复数据不保存
+
+            # 插入新数据（网页6的UPSERT方案）
+            conn.execute(f'''
+                INSERT INTO user_data 
+                (user_id, {data_type}, data_hash)
+                VALUES (?, ?, ?)
+            ''', (user_id, raw_data, data_hash))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            st.error(f"数据保存失败: {str(e)}")
+            return False
 
 @st.cache_resource
 def get_auth_db():
@@ -258,13 +295,14 @@ def calculate_scores(row):
         return pd.Series([0.5, 0.5, 0.5])
 
 def save_prediction_record(user_id, df):
-    """保存预测记录到数据库"""
+    """使用INSERT OR IGNORE策略（网页5方案）"""
     try:
         conn = get_auth_db()
         current_time = datetime.now().isoformat()
         for _, row in df.iterrows():
+            # 修改为冲突忽略模式
             conn.execute('''
-                INSERT INTO prediction_records 
+                INSERT OR IGNORE INTO prediction_records 
                 (user_id, login_time, product_name, comment, recommendation)
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, current_time, row['产品'], row['评论'], row['系统推荐指数']))
@@ -375,6 +413,13 @@ def save_analysis_report(user_id, product_name, report):
             INSERT INTO analysis_reports 
             (user_id, login_time, product_name, summary, score, pros, cons, advice)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, product_name) DO UPDATE SET
+                login_time = excluded.login_time,
+                summary = excluded.summary,
+                score = excluded.score,
+                pros = excluded.pros,
+                cons = excluded.cons,
+                advice = excluded.advice
         ''', (user_id, current_time, product_name, 
              sections['summary'], sections['score'],
              sections['pros'], sections['cons'], sections['advice']))
