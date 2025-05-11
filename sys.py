@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import jieba
 import numpy as np
+from pymysql import converters
 from pypinyin import lazy_pinyin, Style
 from datetime import datetime
 from snownlp import SnowNLP
@@ -20,9 +21,11 @@ from pathlib import Path
 
 # ====================== 用户认证模块 ======================
 def init_auth_db():
-    """初始化数据库连接"""
+    """初始化数据库连接（新增预测记录表和评论表）[6,8](@ref)"""
     conn = sqlite3.connect('user_auth.db', check_same_thread=False)
     cursor = conn.cursor()
+    
+    # 用户表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +34,8 @@ def init_auth_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # 主数据表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_data (
             data_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,17 +43,42 @@ def init_auth_db():
             upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
             raw_data BLOB,
             cleaned_data BLOB,
-            predicted_data BLOB,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
+    
+    # 新增预测记录表[6](@ref)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS predictions (
+            prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            prediction_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            model_version TEXT DEFAULT 'v1.2',
+            result_data BLOB,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    # 新增评论关联表[8](@ref)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS comments (
+            comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prediction_id INTEGER NOT NULL,
+            content TEXT,
+            score INTEGER,
+            FOREIGN KEY(prediction_id) REFERENCES predictions(prediction_id)
+        )
+    ''')
+    
     conn.commit()
     return conn
 
 @st.cache_resource
 def get_auth_db():
-    """获取数据库连接"""
-    return init_auth_db()
+    """获取持久化数据库连接（启用WAL模式提升性能）[6,8](@ref)"""
+    conn = init_auth_db()
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 def register_user(username, password):
     """用户注册逻辑"""
@@ -126,7 +156,50 @@ def load_user_data(user_id, data_type):
         except Exception as e:
             st.error(f"数据加载失败: {str(e)}")
             return None
+
+def save_prediction_data(user_id, df):
+    """保存完整预测记录（新增关联存储）[6,8](@ref)"""
+    conn = get_auth_db()
+    try:
+        # 序列化预测结果
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
         
+        # 插入预测记录
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO predictions (user_id, result_data)
+            VALUES (?, ?)
+        ''', (user_id, buffer.getvalue()))
+        
+        # 获取最新预测ID
+        prediction_id = cursor.lastrowid
+        
+        # 插入评论数据
+        comments = df[['评论', '系统推荐指数']].to_dict('records')
+        cursor.executemany('''
+            INSERT INTO comments (prediction_id, content, score)
+            VALUES (?, ?, ?)
+        ''', [(prediction_id, c['评论'], c['系统推荐指数']) for c in comments])
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"预测数据保存失败: {str(e)}")
+        return False
+
+@st.cache_data(ttl=3600)
+def load_history_data(user_id):
+    """缓存历史记录查询[7,8](@ref)"""
+    return pd.read_sql('''
+        SELECT prediction_id, prediction_time, model_version 
+        FROM predictions
+        WHERE user_id = ?
+        ORDER BY prediction_time DESC
+    ''', get_auth_db(), params=(user_id,))
+
 #-------------历史记录查看-----------
 def show_history(user_id):
     conn = get_auth_db()
@@ -371,6 +444,42 @@ def main_interface():
     """主业务界面"""
     st.title(f"欢迎回来，{st.session_state.username}！")
     
+    # ========= 新增侧边栏历史记录 =========
+    with st.sidebar.expander("📜 历史记录", expanded=True):
+        try:
+            history = load_history_data(st.session_state.user_id)
+            
+            if not history.empty:
+                selected = st.selectbox(
+                    "选择历史记录", 
+                    options=history['prediction_id'].astype(str) + " | " + history['prediction_time'].astype(str),
+                    format_func=lambda x: f"版本 {x.split('|')[1].strip()}"
+                )
+                selected_id = int(selected.split('|')[0])
+                
+                # 加载详细数据
+                detail = pd.read_sql('''
+                    SELECT c.content, c.score 
+                    FROM predictions p
+                    JOIN comments c ON p.prediction_id = c.prediction_id
+                    WHERE p.prediction_id = ?
+                ''', get_auth_db(), params=(selected_id,))
+                
+                st.dataframe(detail, 
+                           column_config={
+                               "content": "评论内容",
+                               "score": st.column_config.ProgressColumn(
+                                   "推荐度",
+                                   min_value=1,
+                                   max_value=10
+                               )
+                           },
+                           height=200)
+            else:
+                st.info("暂无历史记录")
+        except Exception as e:
+            st.error(f"历史记录加载失败: {str(e)}")    
+    
     # 文件上传模块
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
                                     help="支持UTF-8编码文件，最大100MB")
@@ -465,9 +574,8 @@ def main_interface():
                     predicted_scores = st.session_state.model.predict(final_features)
                     cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
                 
-                    if save_user_data(st.session_state.user_id, 'predicted_data', cleaned_df[['产品', '评论', '系统推荐指数']]):
+                    if save_prediction_data(st.session_state.user_id, cleaned_df):
                         st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
-                        status.update(label="✅ 预测完成！", state="complete")
                     
                 except Exception as e:
                     status.update(label="❌ 预测出错！", state="error")
