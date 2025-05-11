@@ -177,11 +177,14 @@ def cleaning(df):
 
         df = df.reset_index(drop=True)
         progress.progress(100)
-        status.update(label="✅ 清洗完成！", state="complete")
-
+        
         status.write("6. 生成关键词词云...")
         df['清洗后评论'] = df['评论'].str.replace(rebate_pattern, '', regex=True)  # 移除返现关键词
         progress.progress(90)
+        
+        status.update(label="✅ 清洗完成！", state="complete")
+
+
         return df
     except Exception as e:
         status.update(label="❌ 处理出错！", state="error")
