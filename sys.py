@@ -51,7 +51,7 @@ def get_auth_db():
     """获取数据库连接"""
     return init_auth_db()
 
-# 新增认证功能实现
+# 用户认证功能实现（必须先于auth_gate定义）
 def register_user(username, password):
     """注册新用户"""
     conn = get_auth_db()
