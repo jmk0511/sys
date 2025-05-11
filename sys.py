@@ -81,27 +81,32 @@ def verify_login(username, password):
         return False, "密码错误", None
 
 # ====================== 数据管理模块 ======================
-def save_user_data(user_id, data_type, df):
-    """保存用户数据到数据库"""
-    with sqlite3.connect('user_auth.db', check_same_thread=False) as conn:
-        try:
-            buffer = io.BytesIO()
-            df.to_parquet(buffer, index=False)
-            buffer.seek(0)
-            
-            update_query = f'''
-                UPDATE user_data 
-                SET {data_type} = ?
-                WHERE user_id = ? 
-                ORDER BY data_id DESC 
-                LIMIT 1
-            '''
-            conn.execute(update_query, (buffer.read(), user_id))
-            conn.commit()
-            return True
-        except Exception as e:
-            st.error(f"数据保存失败: {str(e)}")
-            return False
+def save_user_data(user_id, df):
+    conn = get_auth_db()
+    try:
+        # 插入主记录
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO user_data (user_id, raw_data)
+            VALUES (?, ?)
+        ''', (user_id, df.to_json()))
+        
+        # 获取最新data_id
+        data_id = cursor.lastrowid
+        
+        # 批量插入评论数据
+        comments = df[['评论']].to_dict('records')
+        cursor.executemany('''
+            INSERT INTO comments (data_id, content)
+            VALUES (?, ?)
+        ''', [(data_id, c['评论']) for c in comments])
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"数据保存失败: {str(e)}")
+        return False
 
 def load_user_data(user_id, data_type):
     """从数据库加载用户数据"""
@@ -121,6 +126,33 @@ def load_user_data(user_id, data_type):
         except Exception as e:
             st.error(f"数据加载失败: {str(e)}")
             return None
+        
+#-------------历史记录查看-----------
+def show_history(user_id):
+    conn = get_auth_db()
+    try:
+        # 获取用户所有预测记录
+        history = pd.read_sql('''
+            SELECT prediction_id, prediction_time, model_version 
+            FROM predictions
+            WHERE user_id = ?
+            ORDER BY prediction_time DESC
+        ''', conn, params=(user_id,))
+        
+        # 显示历史记录
+        selected = st.selectbox("选择历史记录", history['prediction_id'])
+        
+        # 加载详细数据
+        detail = pd.read_sql('''
+            SELECT c.content, p.result_data->>'系统推荐指数' as score
+            FROM predictions p
+            JOIN comments c ON p.data_id = c.data_id
+            WHERE p.prediction_id = ?
+        ''', conn, params=(selected,))
+        
+        st.dataframe(detail)
+    except Exception as e:
+        st.error(f"历史记录加载失败: {str(e)}")
 
 # ====================== 核心业务模块 ======================
 def load_rebate_keywords():
