@@ -13,8 +13,74 @@ import joblib
 import requests
 import os
 import io
-import zipfile  
+import zipfile
+import sqlite3
+import bcrypt
+from pathlib import Path
 
+# ====================== 新增用户认证模块 ======================
+def init_auth_db():
+    """初始化认证数据库"""
+    conn = sqlite3.connect('user_auth.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_data (
+            data_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            raw_data BLOB,
+            cleaned_data BLOB,
+            predicted_data BLOB,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    conn.commit()
+    return conn
+
+@st.cache_resource
+def get_auth_db():
+    """获取认证数据库连接"""
+    return init_auth_db()
+
+def register_user(username, password):
+    """用户注册逻辑"""
+    conn = get_auth_db()
+    try:
+        if conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone():
+            return False, "用户名已存在"
+        
+        hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        conn.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', 
+                    (username, hashed_pw.decode('utf-8')))
+        conn.commit()
+        return True, "注册成功"
+    except Exception as e:
+        return False, str(e)
+
+def verify_login(username, password):
+    """用户登录验证"""
+    conn = get_auth_db()
+    user = conn.execute('''
+        SELECT id, password_hash FROM users WHERE username = ?
+    ''', (username,)).fetchone()
+    
+    if not user:
+        return False, "用户不存在", None
+    
+    if bcrypt.checkpw(password.encode('utf-8'), user[1].encode('utf-8')):
+        return True, "登录成功", user[0]
+    else:
+        return False, "密码错误", None
+
+# ====================== 原有业务模块（完整保留）======================
 def load_rebate_keywords():
     default_keywords = ['好评返现', '晒图奖励', '评价有礼', '五星好评', '返现红包']
     file_path = 'rebate_keywords.txt'
@@ -30,41 +96,17 @@ def load_rebate_keywords():
         st.error(f"⚠️ 关键词文件读取失败，已启用默认规则: {str(e)}")
         return default_keywords
 
-# 初始化session状态
-if 'raw_df' not in st.session_state:
-    st.session_state.raw_df = None
-if 'cleaned_df' not in st.session_state:
-    st.session_state.cleaned_df = None
-if 'predicted_df' not in st.session_state:
-    st.session_state.predicted_df = None
-
-# 加载模型和预处理对象
-if 'model' not in st.session_state:
-    try:
-        st.session_state.model = joblib.load('model.joblib')
-        st.session_state.tfidf = joblib.load('tfidf_vectorizer.joblib')
-        category_mappings = joblib.load('category_mappings.joblib')
-        st.session_state.region_mapping = category_mappings['region']
-        st.session_state.product_mapping = category_mappings['product']
-    except Exception as e:
-        st.error(f"初始化失败: {str(e)}")
-
-st.set_page_config(page_title="电商用户购买决策AI辅助支持系统", layout="wide")
-st.title("电商用户购买决策AI辅助支持系统")
-
-# ---------------------- 数据清洗----------------------
 def cleaning(df):
+    # 完整保留原有清洗逻辑
     progress = st.progress(0)
     status = st.status("🚀 正在处理数据...")
     
     try:
-        # 基础过滤
         status.write("1. 过滤汉字少于5个的评论...")
         df['汉字数'] = df['评论'].apply(lambda x: len(re.findall(r'[\u4e00-\u9fff]', str(x))))
         df = df[df['汉字数'] > 5].drop(columns=['汉字数'])
         progress.progress(16)
 
-        # 删除产品为空的数据
         status.write("2. 删除产品信息缺失的评论...")
         original_count = len(df)
         df = df.dropna(subset=['产品'])
@@ -72,29 +114,24 @@ def cleaning(df):
         status.write(f"已清除{removed_count}条无产品信息的记录")
         progress.progress(32)
 
-        # 标准化产品名称
         status.write("2.5 标准化产品名称格式...")
         df['产品'] = df['产品'].str.replace(r'[^\w\s\u4e00-\u9fa5]', '', regex=True)
         df['产品'] = df['产品'].str.strip().str.upper()
         progress.progress(40)
 
-        #检测重复评论
         status.write("3. 检测重复评论...")
         df = df[~df.duplicated(subset=['评论'], keep='first')]
         progress.progress(48)
 
-        # 检测好评返现
         status.write("4. 检测好评返现...")
         rebate_pattern = build_rebate_pattern()
         df = df[~df['评论'].str.contains(rebate_pattern, na=False)]
         progress.progress(64)
 
-        # 检测可疑水军
         status.write("5. 检测可疑水军...")
         df = filter_spam_comments(df)
         progress.progress(80)
 
-        # 最终处理
         df = df.reset_index(drop=True)
         progress.progress(100)
         status.update(label="✅ 清洗完成！", state="complete")
@@ -137,7 +174,6 @@ def filter_spam_comments(df):
     except KeyError:
         return df
 
-# ---------------------- 预测相关函数 ----------------------
 def extract_keywords(text, n=5):
     words = [word for word in jieba.cut(str(text)) if len(word) > 1]
     return ' '.join(words[:n])
@@ -151,9 +187,7 @@ def calculate_scores(row):
         return pd.Series([sentiment, authenticity, relevance])
     except:
         return pd.Series([0.5, 0.5, 0.5])
-    
 
-# ----------------------  DeepSeek 分析模块 ----------------------
 def generate_analysis_prompt(product_name, comments, scores):
     return f"""请根据电商评论数据生成产品分析报告，要求：
 1. 产品名称：{product_name}
@@ -216,131 +250,265 @@ def analyze_products(df):
     
     return analysis_results
 
-# ---------------------- 界面布局 ----------------------
-uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], help="支持UTF-8编码文件，最大100MB")
+# ====================== 用户数据管理模块 ======================
+def save_user_data(user_id, data_type, df):
+    """保存用户数据到数据库"""
+    conn = get_auth_db()
+    try:
+        buffer = io.BytesIO()
+        df.to_parquet(buffer, index=False)
+        buffer.seek(0)
+        
+        update_query = f'''
+            UPDATE user_data 
+            SET {data_type} = ?
+            WHERE user_id = ? 
+            ORDER BY data_id DESC 
+            LIMIT 1
+        '''
+        conn.execute(update_query, (buffer.read(), user_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"数据保存失败: {str(e)}")
+        return False
 
-if uploaded_file and st.session_state.raw_df is None:
-    st.session_state.raw_df = pd.read_csv(uploaded_file)
+def load_user_data(user_id, data_type):
+    """从数据库加载用户数据"""
+    conn = get_auth_db()
+    try:
+        query = f'''
+            SELECT {data_type} 
+            FROM user_data 
+            WHERE user_id = ?
+            ORDER BY data_id DESC 
+            LIMIT 1
+        '''
+        result = conn.execute(query, (user_id,)).fetchone()
+        if result and result[0]:
+            return pd.read_parquet(io.BytesIO(result[0]))
+        return None
+    except Exception as e:
+        st.error(f"数据加载失败: {str(e)}")
+        return None
 
-if st.session_state.raw_df is not None:
-    with st.expander("📂 永久查看原始数据", expanded=True):
-        st.write(f"原始记录数：{len(st.session_state.raw_df)}")
-        st.dataframe(st.session_state.raw_df, use_container_width=True, height=500)
-
-# 数据清洗模块
-if st.session_state.raw_df is not None:
-    st.divider()
-    st.subheader("数据清洗模块")
+# ====================== 界面控制模块 ======================
+def auth_gate():
+    """认证入口页面"""
+    st.title("电商决策支持系统")
     
-    if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
-        with st.spinner('正在处理数据...'):
-            start_time = time.time()
-            st.session_state.cleaned_df = cleaning(st.session_state.raw_df.copy())
-            st.session_state.processing_time = time.time() - start_time
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.expander("🔑 用户登录", expanded=True):
+            login_username = st.text_input("用户名", key="login_user")
+            login_password = st.text_input("密码", type="password", key="login_pw")
+            if st.button("登录"):
+                if not login_username or not login_password:
+                    st.error("请输入用户名和密码")
+                else:
+                    success, msg, user_id = verify_login(login_username, login_password)
+                    if success:
+                        st.session_state.update({
+                            'logged_in': True,
+                            'username': login_username,
+                            'user_id': user_id,
+                            'raw_df': load_user_data(user_id, 'raw_data'),
+                            'cleaned_df': load_user_data(user_id, 'cleaned_data'),
+                            'predicted_df': load_user_data(user_id, 'predicted_data')
+                        })
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-    # 直接展示清洗结果
+    with col2:
+        with st.expander("📝 新用户注册", expanded=True):
+            reg_username = st.text_input("注册用户名", key="reg_user")
+            reg_password = st.text_input("注册密码", type="password", key="reg_pw")
+            if st.button("立即注册"):
+                if len(reg_password) < 6:
+                    st.error("密码至少需要6位")
+                elif not reg_username:
+                    st.error("请输入用户名")
+                else:
+                    success, msg = register_user(reg_username, reg_password)
+                    if success:
+                        st.success(msg + "，请返回登录")
+                    else:
+                        st.error(msg)
+
+def main_interface():
+    """主业务界面"""
+    st.title(f"欢迎回来，{st.session_state.username}！")
+    
+    # 文件上传模块
+    uploaded_file = st.file_uploader("上传CSV文件", type=["csv"], 
+                                    help="支持UTF-8编码文件，最大100MB")
+    
+    if uploaded_file:
+        try:
+            raw_df = pd.read_csv(uploaded_file)
+            conn = get_auth_db()
+            conn.execute('''
+                INSERT INTO user_data (user_id, raw_data)
+                VALUES (?, ?)
+            ''', (st.session_state.user_id, uploaded_file.getvalue()))
+            conn.commit()
+            st.session_state.raw_df = raw_df
+        except Exception as e:
+            st.error(f"文件读取失败: {str(e)}")
+
+    # 数据展示模块
+    if st.session_state.raw_df is not None:
+        with st.expander("📂 原始数据详情", expanded=False):
+            st.write(f"记录数：{len(st.session_state.raw_df)}")
+            st.dataframe(st.session_state.raw_df, use_container_width=True, height=300)
+            if st.button("🗑️ 清除当前数据"):
+                st.session_state.raw_df = None
+                st.session_state.cleaned_df = None
+                st.session_state.predicted_df = None
+                st.rerun()
+
+    # 数据清洗模块
+    if st.session_state.raw_df is not None:
+        st.divider()
+        st.subheader("数据清洗模块")
+        
+        if st.button("🚀 开始清洗", help="点击开始独立清洗流程", use_container_width=True):
+            with st.spinner('正在处理数据...'):
+                start_time = time.time()
+                cleaned_df = cleaning(st.session_state.raw_df.copy())
+                if save_user_data(st.session_state.user_id, 'cleaned_data', cleaned_df):
+                    st.session_state.cleaned_df = cleaned_df
+                st.session_state.processing_time = time.time() - start_time
+
+        if st.session_state.cleaned_df is not None:
+            with st.expander("✨ 清洗后数据详情", expanded=False):
+                st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
+                st.dataframe(
+                    st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
+                    use_container_width=True,
+                    height=400
+                )
+
+    # 预测分析模块
     if st.session_state.cleaned_df is not None:
-        with st.expander("✨ 清洗后数据详情", expanded=True):
-            st.write(f"唯一产品列表：{st.session_state.cleaned_df['产品'].unique().tolist()}")
-            st.dataframe(
-                st.session_state.cleaned_df[['昵称','日期','地区','产品', '评分','评论']],
-                use_container_width=True,
-                height=500
-            )
-
-# 预测模块
-if st.session_state.cleaned_df is not None:
-    st.divider()
-    st.subheader("预测模块")
-    
-    if st.button("🔮 预测推荐指数", help="点击进行推荐指数预测", use_container_width=True):
-        if 'model' not in st.session_state:
-            st.error("模型未加载，无法进行预测！")
-            st.stop()
+        st.divider()
+        st.subheader("预测模块")
         
-        cleaned_df = st.session_state.cleaned_df.copy()
-        
-        with st.status("🧠 正在生成预测...", expanded=True) as status:
-            try:
-                status.write("1. 提取关键词...")
-                cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
-                
-                status.write("2. 计算情感特征...")
-                scores = cleaned_df.apply(calculate_scores, axis=1)
-                cleaned_df[['情感度', '真实性', '参考度']] = scores
-                
-                status.write("3. 文本特征转换...")
-                keywords_tfidf = st.session_state.tfidf.transform(cleaned_df['关键词'])
-                
-                status.write("4. 合并特征...")
-                numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
-                features = hstack([keywords_tfidf, numeric_features])
-                
-                status.write("5. 处理分类特征...")
-                cleaned_df['地区_编码'] = pd.Categorical(
-                    cleaned_df['地区'], 
-                    categories=st.session_state.region_mapping
-                ).codes
-                cleaned_df['产品_编码'] = pd.Categorical(
-                    cleaned_df['产品'],
-                    categories=st.session_state.product_mapping
-                ).codes
-                final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
-                
-                status.write("6. 进行模型预测...")
-                predicted_scores = st.session_state.model.predict(final_features)
-                cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
-                
-                st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
-                status.update(label="✅ 预测完成！", state="complete")
-                
-            except Exception as e:
-                status.update(label="❌ 预测出错！", state="error")
-                st.error(f"错误详情：{str(e)}")
-                st.stop()
-
-        if st.session_state.predicted_df is not None:
-            st.success("预测结果：")
-            st.dataframe(st.session_state.predicted_df, use_container_width=True, height=600, hide_index=True)
-            st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
-    
-            csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="⬇️ 下载预测结果",
-                data=csv,
-                file_name='predicted_scores.csv',
-                mime='text/csv',
-                key='prediction_download'
-            )
+        if st.button("🔮 预测推荐指数", use_container_width=True):
+            if 'model' not in st.session_state:
+                st.error("模型未加载，无法进行预测！")
+                return
             
-# ---------------------- 分析模块 ----------------------
-if st.session_state.predicted_df is not None:
-    st.divider()
-    st.subheader("深度分析模块")
-    
-    if st.button("📊 生成产品分析报告", type="primary"):
-        analysis_results = analyze_products(st.session_state.predicted_df)
-        st.session_state.analysis_reports = analysis_results  # 存储报告到session
-        
-        # 展示所有报告
-        for product, report in analysis_results.items():
-            with st.expander(f"**{product}** 完整分析报告", expanded=False):
-                st.markdown(report)
-
-        # 统一下载按钮
-        if analysis_results:
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                for product, report in analysis_results.items():
-                    # 处理特殊字符文件名
-                    safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
-                    zip_file.writestr(f"{safe_name}_分析.txt", report)
-            zip_buffer.seek(0)
+            cleaned_df = st.session_state.cleaned_df.copy()
             
-            st.download_button(
-                label="⬇️ 下载全部分析报告",
-                data=zip_buffer,
-                file_name="产品分析报告.zip",
-                mime="application/zip",
-                key='full_report_download'
-            )
+            with st.status("🧠 正在生成预测...", expanded=True) as status:
+                try:
+                    status.write("1. 提取关键词...")
+                    cleaned_df['关键词'] = cleaned_df['评论'].apply(lambda x: extract_keywords(x, n=5))
+                    
+                    status.write("2. 计算情感特征...")
+                    scores = cleaned_df.apply(calculate_scores, axis=1)
+                    cleaned_df[['情感度', '真实性', '参考度']] = scores
+                    
+                    status.write("3. 文本特征转换...")
+                    keywords_tfidf = st.session_state.tfidf.transform(cleaned_df['关键词'])
+                    
+                    status.write("4. 合并特征...")
+                    numeric_features = cleaned_df[['情感度', '真实性', '参考度']].values
+                    features = hstack([keywords_tfidf, numeric_features])
+                    
+                    status.write("5. 处理分类特征...")
+                    cleaned_df['地区_编码'] = pd.Categorical(
+                        cleaned_df['地区'], 
+                        categories=st.session_state.region_mapping
+                    ).codes
+                    cleaned_df['产品_编码'] = pd.Categorical(
+                        cleaned_df['产品'],
+                        categories=st.session_state.product_mapping
+                    ).codes
+                    final_features = hstack([features, cleaned_df[['地区_编码', '产品_编码']].values])
+                    
+                    status.write("6. 进行模型预测...")
+                    predicted_scores = st.session_state.model.predict(final_features)
+                    cleaned_df['系统推荐指数'] = np.round(predicted_scores).clip(1, 10).astype(int)
+                    
+                    if save_user_data(st.session_state.user_id, 'predicted_data', cleaned_df[['产品', '评论', '系统推荐指数']]):
+                        st.session_state.predicted_df = cleaned_df[['产品', '评论', '系统推荐指数']]
+                        status.update(label="✅ 预测完成！", state="complete")
+                        
+                except Exception as e:
+                    status.update(label="❌ 预测出错！", state="error")
+                    st.error(f"错误详情：{str(e)}")
+                    st.stop()
+
+            if st.session_state.predicted_df is not None:
+                st.success("预测结果：")
+                st.dataframe(st.session_state.predicted_df, use_container_width=True, height=600, hide_index=True)
+                st.caption(f"总记录数：{len(st.session_state.predicted_df)} 条")
+        
+                csv = st.session_state.predicted_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ 下载预测结果",
+                    data=csv,
+                    file_name='predicted_scores.csv',
+                    mime='text/csv',
+                    key='prediction_download'
+                )
+                
+    # 深度分析模块
+    if st.session_state.predicted_df is not None:
+        st.divider()
+        st.subheader("深度分析模块")
+        
+        if st.button("📊 生成产品分析报告", type="primary"):
+            analysis_results = analyze_products(st.session_state.predicted_df)
+            st.session_state.analysis_reports = analysis_results
+            
+            for product, report in analysis_results.items():
+                with st.expander(f"​**​{product}​**​ 完整分析报告", expanded=False):
+                    st.markdown(report)
+
+            if analysis_results:
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                    for product, report in analysis_results.items():
+                        safe_name = re.sub(r'[\\/*?:"<>|]', "_", product)
+                        zip_file.writestr(f"{safe_name}_分析.txt", report)
+                zip_buffer.seek(0)
+                
+                st.download_button(
+                    label="⬇️ 下载全部分析报告",
+                    data=zip_buffer,
+                    file_name="产品分析报告.zip",
+                    mime="application/zip",
+                    key='full_report_download'
+                )
+
+# ====================== 主程序入口 ======================
+if __name__ == "__main__":
+    # 初始化模型和数据库
+    if 'model' not in st.session_state:
+        try:
+            st.session_state.model = joblib.load('model.joblib')
+            st.session_state.tfidf = joblib.load('tfidf_vectorizer.joblib')
+            category_mappings = joblib.load('category_mappings.joblib')
+            st.session_state.region_mapping = category_mappings['region']
+            st.session_state.product_mapping = category_mappings['product']
+        except Exception as e:
+            st.error(f"初始化失败: {str(e)}")
+
+    # 初始化会话状态
+    session_keys = ['logged_in', 'username', 'user_id', 'raw_df', 'cleaned_df', 'predicted_df']
+    for key in session_keys:
+        if key not in st.session_state:
+            st.session_state[key] = None
+
+    # 页面配置
+    st.set_page_config(page_title="电商用户购买决策AI辅助支持系统", layout="wide")
+    
+    # 流程控制
+    if not st.session_state.logged_in:
+        auth_gate()
+    else:
+        main_interface()
